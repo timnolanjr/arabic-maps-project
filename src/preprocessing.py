@@ -4,257 +4,278 @@ src/preprocessing.py
 
 Preprocess Arabic circular map scans:
   - Reads Map Layout & processed flags from Google Sheet
-  - Skips only those already in the sheet
   - Filters to one_page_full or two_page_full layouts
-  - Sorts remaining images by file size (ascending)
-  - Detects circles (Hough) + small center-dot
-  - Interactive candidate selection or largest-radius pick
-      * y = keep this circle
-      * n = reject, try next candidate
-      * s = skip this image entirely
-  - Saves annotated images
+  - Sorts images by file size (ascending)
+  - Interactive candidate selection:
+      * click 8 edge points in a Matplotlib window
+      * fit a best‐fit circle through those 8 points
+      * run HoughCircles in a tight ROI around that circle
+      * score each candidate by “mean radial error” to your 8 clicks
+      * batch‐export 100 candidate previews for you to inspect and pick by index
+  - Non‐interactive mode: full‐image HoughCircles pick largest radius
+  - Saves annotated images, uploads to Google Drive
   - Optionally displays (--show)
   - Updates Google Sheet and logs to offline CSV
-  - Verbose prints to track progress
+  - Prints verbose progress and elapsed times
 """
 
-import argparse
-import os
-import time
-import unicodedata
-
+import argparse, os, time, unicodedata, math, tempfile, shutil, subprocess, sys
 import cv2 as cv
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from tqdm import tqdm
-
 import gspread
 from google.oauth2.service_account import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
 from dotenv import load_dotenv
 
-VALID_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.tif', '.tiff')
-ALLOWED_LAYOUTS = {'one_page_full', 'two_page_full'}
+VALID_EXTS = ('.jpg','.jpeg','.png','.tif','.tiff')
+LAYOUTS_OK = {'one_page_full','two_page_full'}
 
+def norm(s): return unicodedata.normalize('NFC', (s or '').strip())
+def key_from(fn): return norm(os.path.splitext(fn)[0])
 
-def norm(s: str) -> str:
-    return unicodedata.normalize('NFC', (s or '').strip())
-
-
-def key_from_filename(fname: str) -> str:
-    return norm(os.path.splitext(fname)[0])
-
-
-# ── Load environment & offline CSV ─────────────────────────────────────
 load_dotenv()
-CRED_PATH   = os.environ.get('GOOGLE_SHEETS_CREDENTIALS', '')
-SHEET_ID    = os.environ.get('SHEET_ID', '')
-OFFLINE_CSV = os.environ.get('OFFLINE_CSV', 'map_metadata.csv')
+CRED      = os.environ['GOOGLE_SHEETS_CREDENTIALS']
+SHEET_ID  = os.environ['SHEET_ID']
+CSV_FILE  = os.environ.get('OFFLINE_CSV','map_metadata.csv')
+DRIVE_FLD = os.environ.get('GOOGLE_DRIVE_FOLDER_ID','')
 
-print(f"📋 Loading local CSV log from {OFFLINE_CSV}...")
+print(f"[1/7] Loading local log: {CSV_FILE}")
 try:
-    df_local = pd.read_csv(OFFLINE_CSV, dtype=str)
-    df_local['File Name'] = df_local['File Name'].fillna('').map(norm)
-    print(f"  → {len(df_local)} rows loaded from CSV.")
+    df_local = pd.read_csv(CSV_FILE, dtype=str).fillna('')
+    df_local['File Name'] = df_local['File Name'].map(norm)
+    print(f"    → {len(df_local)} rows loaded from CSV")
 except FileNotFoundError:
-    print("  → No local CSV found, starting fresh.")
     df_local = pd.DataFrame(columns=[
-        'File Name','Map Layout','Circle Center X','Circle Center Y','Circle Radius','Processed At'
+        'File Name','Map Layout','Circle Center X',
+        'Circle Center Y','Circle Radius','Processed At'
     ])
-
 processed_local = {
-    fn for fn, row in df_local.set_index('File Name').iterrows()
-    if all(str(row.get(c,'')).strip() for c in ('Circle Center X','Circle Center Y','Circle Radius'))
+    fn for fn,row in df_local.set_index('File Name').iterrows()
+    if all(row[c].strip() for c in ('Circle Center X','Circle Center Y','Circle Radius'))
 }
-print(f"  → {len(processed_local)} files marked processed in local CSV.\n")
+print(f"    → {len(processed_local)} fully processed locally\n")
 
+print("[2/7] Connecting to Google Sheets & Drive...")
+creds = Credentials.from_service_account_file(CRED, scopes=[
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive"
+])
+# Sheets
+gc = gspread.authorize(creds)
+ws = gc.open_by_key(SHEET_ID).sheet1
+hdr = ws.row_values(1)
+COL_FN, COL_LAYOUT, COL_X, COL_Y, COL_R = (
+    hdr.index('File Name')+1,
+    hdr.index('Map Layout')+1,
+    hdr.index('Circle Center X')+1,
+    hdr.index('Circle Center Y')+1,
+    hdr.index('Circle Radius')+1,
+)
+# Drive
+drive = build('drive','v3',credentials=creds)
+print("    → Connected to Google APIs\n")
 
-# ── Connect to Google Sheets ───────────────────────────────────────────
-use_google = True
-print("🔗 Connecting to Google Sheets...")
-try:
-    SCOPES = ["https://www.googleapis.com/auth/spreadsheets",
-              "https://www.googleapis.com/auth/drive"]
-    creds  = Credentials.from_service_account_file(CRED_PATH, scopes=SCOPES)
-    gc     = gspread.authorize(creds)
-    ws     = gc.open_by_key(SHEET_ID).sheet1
+def fetch_sheet():
+    names   = [norm(n) for n in ws.col_values(COL_FN)[1:]]
+    layouts = ws.col_values(COL_LAYOUT)[1:]
+    xs      = ws.col_values(COL_X)[1:]
+    layout_map = dict(zip(names,layouts))
+    done = {names[i] for i,v in enumerate(xs) if v.strip()}
+    print(f"[3/7] Sheet: {len(names)} entries, {len(done)} already have circle data\n")
+    return layout_map, done
 
-    hdr            = ws.row_values(1)
-    FILE_NAME_COL  = hdr.index('File Name') + 1
-    MAP_LAYOUT_COL = hdr.index('Map Layout') + 1
-    X_COL          = hdr.index('Circle Center X') + 1
-    Y_COL          = hdr.index('Circle Center Y') + 1
-    R_COL          = hdr.index('Circle Radius') + 1
-
-    print("  ✅ Connected to Google Sheets.\n")
-except Exception as e:
-    use_google = False
-    print(f"  ⚠ Cannot connect to Google Sheets: {e}\n")
-
-
-def fetch_sheet_state():
-    raw_names = ws.col_values(FILE_NAME_COL)[1:]
-    names      = [norm(n) for n in raw_names]
-    layouts    = ws.col_values(MAP_LAYOUT_COL)[1:]
-    xs         = ws.col_values(X_COL)[1:]
-    layout_map    = dict(zip(names, layouts))
-    processed_set = { names[i] for i, v in enumerate(xs) if str(v).strip() }
-    print(f"  → Sheet has {len(layout_map)} entries, {len(processed_set)} already processed.\n")
-    return layout_map, processed_set
-
-
-def save_metadata(key: str, x: int, y: int, r: int, layout: str):
+def save_metadata(key,x,y,r,layout):
     ts = time.strftime('%Y-%m-%dT%H:%M:%S')
-    print(f"✎ Saving metadata for '{key}': X={x}, Y={y}, R={r}, layout={layout}")
-    if use_google:
-        try:
-            all_names = ws.col_values(FILE_NAME_COL)
-            normed    = [norm(n) for n in all_names]
-            row_index = normed.index(key) + 1
-            ws.update_cell(row_index, X_COL, str(x))
-            ws.update_cell(row_index, Y_COL, str(y))
-            ws.update_cell(row_index, R_COL, str(r))
-            print(f"  🗒 Updated sheet row {row_index} for '{key}'")
-        except Exception as e:
-            print(f"  ⚠ Sheet update failed for '{key}': {e}")
-
-    meta = {
-        'File Name':       key,
-        'Map Layout':      layout,
-        'Circle Center X': x,
-        'Circle Center Y': y,
-        'Circle Radius':   r,
-        'Processed At':    ts
+    print(f"[6/7] Writing metadata for '{key}' → X={x}, Y={y}, R={r}")
+    # sheet
+    names = [norm(n) for n in ws.col_values(COL_FN)]
+    row   = names.index(key)+1
+    ws.update_cell(row,COL_X,str(x))
+    ws.update_cell(row,COL_Y,str(y))
+    ws.update_cell(row,COL_R,str(r))
+    # csv
+    rec = {
+        'File Name':key,'Map Layout':layout,
+        'Circle Center X':x,'Circle Center Y':y,
+        'Circle Radius':r,'Processed At':ts
     }
-    df = pd.read_csv(OFFLINE_CSV, dtype=str) if os.path.exists(OFFLINE_CSV) else pd.DataFrame()
+    df = pd.read_csv(CSV_FILE,dtype=str) if os.path.exists(CSV_FILE) else pd.DataFrame()
     df['File Name'] = df['File Name'].fillna('').map(norm)
-    df = df[df['File Name'] != key]
-    df = pd.concat([df, pd.DataFrame([meta])], ignore_index=True)
-    df.to_csv(OFFLINE_CSV, index=False)
-    print(f"  🗒 Wrote to local CSV: {OFFLINE_CSV}\n")
+    df = df[df['File Name']!=key]
+    df = pd.concat([df,pd.DataFrame([rec])],ignore_index=True)
+    df.to_csv(CSV_FILE,index=False)
+    print("    → Metadata saved\n")
 
+def upload_to_drive(local, name):
+    if not DRIVE_FLD: return
+    print(f"[7/7] Uploading {name} to Google Drive folder {DRIVE_FLD}...")
+    media = MediaFileUpload(local, mimetype='image/jpeg', resumable=True, chunksize=10*1024*1024)
+    req = drive.files().create(
+        body={'name':name,'parents':[DRIVE_FLD]},
+        media_body=media,
+        fields='id'
+    )
+    resp = None
+    while resp is None:
+        status, resp = req.next_chunk()
+        if status:
+            print(f"    → {int(status.progress()*100)}% uploaded")
+    print("    → Upload complete\n")
 
-def pick_one(src, cands):
-    """
-    Show candidates in turn.  y=keep, n=next, s=skip image.
-    Returns (x,y,r), or 'skip' to abort this image, or None if no choice.
-    """
-    for i, (cx, cy, cr) in enumerate(cands, start=1):
-        img = src.copy()
-        cv.circle(img, (cx, cy), cr, (255, 0, 255), 3)
-        cv.circle(img, (cx, cy),   int(cr/100), (255, 0, 255), 5)
-        plt.imshow(cv.cvtColor(img, cv.COLOR_BGR2RGB))
-        plt.title(f"Candidate #{i}  (y=keep, n=next, s=skip this image)")
-        plt.axis('off'); plt.show()
-        ans = ''
-        while ans.lower() not in ('y','n','s'):
-            ans = input("Keep this circle? (y/n/s): ")
-        plt.close()
-        if ans.lower() == 'y':
-            return (cx, cy, cr)
-        if ans.lower() == 's':
-            return 'skip'
+def fit_circle(xs,ys):
+    A = np.column_stack([2*xs,2*ys,np.ones_like(xs)])
+    b = xs*xs+ys*ys
+    c,_,_,_ = np.linalg.lstsq(A,b,rcond=None)
+    cx,cy = c[0],c[1]
+    r = math.sqrt(c[2]+cx*cx+cy*cy)
+    return cx,cy,r
+
+def click_points(img, n=8):
+    print("[4/7] Opening point-selection window...")
+    fig,ax = plt.subplots()
+    ax.imshow(img); ax.set_title(f"Click {n} edge points"); plt.axis('off')
+    pts = plt.ginput(n, timeout=-1)
+    plt.close(fig)
+    # ensure it's fully closed
+    plt.pause(0.1)
+    print(f"    → {len(pts)} points collected\n")
+    return pts
+
+def detect_circle_roi(gray,src):
+    pts = click_points(cv.cvtColor(gray,cv.COLOR_GRAY2RGB),8)
+    if len(pts)<3:
+        print("    • insufficient clicks; skipping ROI detection\n")
+        return []
+    xs = np.array([p[0] for p in pts]); ys = np.array([p[1] for p in pts])
+    cx0,cy0,r0 = fit_circle(xs,ys)
+    print(f"    • fitted center=({cx0:.1f},{cy0:.1f}), r≈{r0:.1f}")
+    print("[5/7] Computing HoughCircles in ROI…")
+    m = int(r0*1.2)
+    x0,y0 = max(0,int(cx0-m)), max(0,int(cy0-m))
+    x1,y1 = min(gray.shape[1],int(cx0+m)), min(gray.shape[0],int(cy0+m))
+    roi = gray[y0:y1,x0:x1]
+    cir = cv.HoughCircles(
+        roi, cv.HOUGH_GRADIENT, dp=1, minDist=2,
+        param1=100, param2=10,
+        minRadius=int(r0*0.85), maxRadius=int(r0*1.15)
+    )
+    if cir is None:
+        print("    • no Hough candidates found\n")
+        return []
+    raw = np.uint16(np.around(cir[0]))
+    cands = [(c[0]+x0, c[1]+y0, c[2]) for c in raw]
+    def radial_err(c):
+        cx,cy,cr = c
+        return np.mean([abs(math.hypot(xi-cx,yi-cy)-cr) for xi,yi in pts])
+    sorted_cands = sorted(cands, key=radial_err)
+    print(f"    • {len(sorted_cands)} candidates ranked by radial error\n")
+    return sorted_cands
+
+def pick_batch(src,cands,batch=100):
+    tmp = tempfile.mkdtemp(prefix="hough_preview_")
+    try:
+        tot = len(cands)
+        for s in range(0,tot,batch):
+            e = min(s+batch,tot)
+            for i,(cx,cy,cr) in enumerate(cands[s:e], s+1):
+                im = src.copy()
+                cv.circle(im,(int(cx),int(cy)),int(cr),(255,0,255),3)
+                cv.circle(im,(int(cx),int(cy)),max(3,int(cr*0.01)),(255,0,255),3)
+                cv.imwrite(f"{tmp}/cand_{i:04d}.jpg",im)
+            print(f"    • Preview {s+1}-{e} saved to {tmp}")
+            subprocess.run(['open',tmp] if sys.platform=='darwin' else ['xdg-open',tmp])
+            choice = input(f"    Pick 1–{tot}, 'n' next batch, 's' skip: ")
+            if choice.lower()=='n': continue
+            if choice.lower()=='s': return 'skip'
+            if choice.isdigit() and 1<=int(choice)<=tot:
+                return cands[int(choice)-1]
+    finally:
+        shutil.rmtree(tmp)
     return None
 
-
-def detect_circle(path: str, interactive: bool):
-    src = cv.imread(path, cv.IMREAD_COLOR)
+def detect_circle(path,interactive):
+    src = cv.imread(path)
     if src is None:
-        print(f"✖ Cannot open {path}")
-        return None
-    gray = cv.cvtColor(src, cv.COLOR_BGR2GRAY)
-    gray = cv.medianBlur(gray, 5)
-    h, w = gray.shape
-    s    = min(h, w)
-    circles = cv.HoughCircles(
-        gray, cv.HOUGH_GRADIENT, dp=1, minDist=1,
-        param1=100, param2=10,
-        minRadius=int(s*0.1), maxRadius=int(s*0.5)
-    )
-    if circles is None:
-        return None
-    cands = np.uint16(np.around(circles[0])).tolist()
-    return pick_one(src, cands) if interactive else max(cands, key=lambda c: c[2])
+        print(f"cannot open {path}\n"); return None
+    gray = cv.medianBlur(cv.cvtColor(src,cv.COLOR_BGR2GRAY),5)
+    if interactive:
+        cands = detect_circle_roi(gray,src)
+        if not cands: return None
+        return pick_batch(src,cands)
+    else:
+        cir = cv.HoughCircles(
+            gray, cv.HOUGH_GRADIENT, dp=1, minDist=2,
+            param1=100, param2=10,
+            minRadius=int(min(gray.shape)*0.1),
+            maxRadius=int(min(gray.shape)*0.5)
+        )
+        if cir is None:
+            print("    • No Hough detected; skipping\n")
+            return None
+        raw = np.uint16(np.around(cir[0]))
+        best = max(raw.tolist(), key=lambda c: c[2])
+        return tuple(best)
 
+def human_size(b):
+    for u in ['B','KB','MB','GB']:
+        if b < 1024: return f"{b:.1f}{u}"
+        b /= 1024
+    return f"{b:.1f}TB"
 
 def main():
-    p = argparse.ArgumentParser(description="Detect circles in Arabic maps and update metadata.")
-    p.add_argument("-i","--input-dir",  required=True, help="Directory of raw map images")
-    p.add_argument("-o","--output-dir", default="Maps_circleGuess", help="Where to save annotated outputs")
-    p.add_argument("--interactive",   action="store_true", help="Choose among circle candidates")
-    p.add_argument("--show",          action="store_true", help="Display each annotated image")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-i','--input-dir', required=True)
+    parser.add_argument('-o','--output-dir', default='Maps_circleGuess')
+    parser.add_argument('--interactive', action='store_true')
+    parser.add_argument('--show', action='store_true')
+    args = parser.parse_args()
 
-    print(f"🚀 Starting processing:\n  input-dir = {args.input_dir}\n  output-dir = {args.output_dir}\n")
-    if not os.path.isdir(args.input_dir):
-        print(f"✖ Input directory '{args.input_dir}' not found")
-        return 1
-
-    if use_google:
-        layout_map, processed_google = fetch_sheet_state()
-    else:
-        layout_map, processed_google = {}, set()
-
-    # Gather → filter by layout → sort by file-size ascending
-    candidates = []
-    for fn in os.listdir(args.input_dir):
-        if fn.startswith('.') or fn.lower().endswith('.pdf'):
-            continue
-        if not fn.lower().endswith(VALID_EXTENSIONS):
-            continue
-        key    = key_from_filename(fn)
-        layout = layout_map.get(key, '')
-        if layout not in ALLOWED_LAYOUTS:
-            print(f"  ↪ Skipping '{fn}' (layout='{layout}')")
-            continue
-        path = os.path.join(args.input_dir, fn)
-        try:
-            size = os.path.getsize(path)
-        except OSError:
-            size = float('inf')
-        candidates.append((fn, layout, size))
-
-    candidates.sort(key=lambda x: x[2])
-    print(f"🔍 {len(candidates)} images queued (filtered+sorted by size).\n")
+    layout_map, done = fetch_sheet()
+    files = [f for f in os.listdir(args.input_dir)
+             if f.lower().endswith(VALID_EXTS)]
+    files.sort(key=lambda f: os.path.getsize(os.path.join(args.input_dir,f)))
+    print(f"[   ] {len(files)} files queued (filtered + sorted by size)\n")
 
     os.makedirs(args.output_dir, exist_ok=True)
-    for fn, layout, size in tqdm(candidates, desc="Processing", unit="file"):
-        key = key_from_filename(fn)
-        if key in processed_google:
-            print(f"\n  ↪ Skipping '{fn}' (already in sheet)\n")
+    for fn in tqdm(files, desc="Files"):
+        key = key_from(fn)
+        if layout_map.get(key,'') not in LAYOUTS_OK:
+            print(f" skipping {fn}: layout != allowed")
+            continue
+        if key in done:
+            ans = input(f"{fn} already done—skip? (y/n): ")
+            if ans.lower().startswith('y'):
+                print(" skipped\n")
+                continue
+
+        path = os.path.join(args.input_dir, fn)
+        sz = os.path.getsize(path)
+        print(f"\n→ Processing {fn} ({human_size(sz)})")
+        t0 = time.time()
+
+        res = detect_circle(path, args.interactive)
+        if not res or res=='skip':
+            print(" skipped\n")
             continue
 
-        raw_path = os.path.join(args.input_dir, fn)
-        print(f"\n▶ Processing: {fn}   (size={size} bytes)")
-        result = detect_circle(raw_path, args.interactive)
-        if result == 'skip':
-            print(f"⏭ Skipped '{fn}' by user request\n")
-            continue
-        if not result:
-            print(f"⚠ No circle found in '{fn}', skipping\n")
-            continue
-
-        x, y, r = result
-        img = cv.imread(raw_path, cv.IMREAD_COLOR)
-        cv.circle(img, (x, y), r, (255,0,255), 3)
-        cv.circle(img, (x, y),   int(r/100), (255, 0, 255), 5)
-
-        title = f"{fn}  (X={x}, Y={y}, R={r})"
+        x,y,r = res
+        src = cv.imread(path)
+        cv.circle(src,(int(x),int(y)),int(r),(255,0,255),3)
+        cv.circle(src,(int(x),int(y)),max(3,int(r*0.01)),(255,0,255),3)
+        out = os.path.join(args.output_dir, fn)
+        cv.imwrite(out, src)
+        upload_to_drive(out, fn)
         if args.show:
-            plt.imshow(cv.cvtColor(img, cv.COLOR_BGR2RGB))
-            plt.title(title)
-            plt.axis('off')
-            plt.show()
+            plt.imshow(cv.cvtColor(src,cv.COLOR_BGR2RGB))
+            plt.title(fn); plt.axis('off'); plt.show()
 
-        out_path = os.path.join(args.output_dir, fn)
-        cv.imwrite(out_path, img)
-        print(f"  ✔ Saved annotated image to {out_path}")
+        save_metadata(key, x, y, r, layout_map[key])
+        dt = time.time() - t0
+        print(f"Elapsed {int(dt//60)}m{dt%60:.1f}s\n")
 
-        save_metadata(key, x, y, r, layout)
-
-    print("\n🏁 All done.")
-    return 0
-
-
-if __name__ == "__main__":
-    exit(main())
+if __name__=='__main__':
+    main()
