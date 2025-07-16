@@ -70,7 +70,7 @@ Ensure your Google Sheet has columns matching the header row in `data/map_metada
   ```  
 - Detect circles and annotate:  
   ```
-  python src/preprocessing.py \
+  python -m arabic_maps.cli \
     -i data/Raw_Maps \
     -o data/Perfect_Maps_Processed \
     [--interactive] [--show]
@@ -85,6 +85,12 @@ Directory Layout
 │   ├── Raw\_Maps/                  # Raw scans (jpg, png, tiff, pdf…)
 │   └── map\_metadata.csv           # Offline CSV mirror of Google Sheet
 ├── src/
+│   ├── arabic_maps/
+│   │   ├── __init__.py
+│   │   ├── cli.py
+│   │   ├── circle.py
+│   │   ├── config.py
+│   │   └── sheet.py
 │   ├── Raw\_Maps\_find\_missing.py
 │   ├── fill\_sheet\_metadata.py
 │   ├── preprocessing.py
