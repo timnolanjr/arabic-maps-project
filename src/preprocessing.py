@@ -43,7 +43,7 @@ SHEET_ID  = os.environ['SHEET_ID']
 CSV_FILE  = os.environ.get('OFFLINE_CSV','map_metadata.csv')
 DRIVE_FLD = os.environ.get('GOOGLE_DRIVE_FOLDER_ID','')
 
-print(f"[1/7] Loading local log: {CSV_FILE}")
+print(f"Loading local log: {CSV_FILE}")
 try:
     df_local = pd.read_csv(CSV_FILE, dtype=str).fillna('')
     df_local['File Name'] = df_local['File Name'].map(norm)
@@ -59,7 +59,7 @@ processed_local = {
 }
 print(f"    → {len(processed_local)} fully processed locally\n")
 
-print("[2/7] Connecting to Google Sheets & Drive...")
+print("Connecting to Google Drive & Sheets...")
 creds = Credentials.from_service_account_file(CRED, scopes=[
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive"
@@ -85,12 +85,12 @@ def fetch_sheet():
     xs      = ws.col_values(COL_X)[1:]
     layout_map = dict(zip(names,layouts))
     done = {names[i] for i,v in enumerate(xs) if v.strip()}
-    print(f"[3/7] Sheet: {len(names)} entries, {len(done)} already have circle data\n")
+    print(f"Sheet: {len(names)} entries, {len(done)} already have circle data\n")
     return layout_map, done
 
 def save_metadata(key,x,y,r,layout):
     ts = time.strftime('%Y-%m-%dT%H:%M:%S')
-    print(f"[6/7] Writing metadata for '{key}' → X={x}, Y={y}, R={r}")
+    print(f"[3/4] Writing metadata for '{key}' → X={x}, Y={y}, R={r}")
     # sheet
     names = [norm(n) for n in ws.col_values(COL_FN)]
     row   = names.index(key)+1
@@ -111,20 +111,24 @@ def save_metadata(key,x,y,r,layout):
     print("    → Metadata saved\n")
 
 def upload_to_drive(local, name):
-    if not DRIVE_FLD: return
-    print(f"[7/7] Uploading {name} to Google Drive folder {DRIVE_FLD}...")
-    media = MediaFileUpload(local, mimetype='image/jpeg', resumable=True, chunksize=10*1024*1024)
-    req = drive.files().create(
-        body={'name':name,'parents':[DRIVE_FLD]},
-        media_body=media,
-        fields='id'
-    )
-    resp = None
-    while resp is None:
-        status, resp = req.next_chunk()
-        if status:
-            print(f"    → {int(status.progress()*100)}% uploaded")
-    print("    → Upload complete\n")
+    if not DRIVE_FLD:
+        return
+    print(f"[4/4] Uploading {name} to Google Drive folder {DRIVE_FLD}…")
+    try:
+        media = MediaFileUpload(local, mimetype='image/jpeg', resumable=True, chunksize=10*1024*1024)
+        req = drive.files().create(
+            body={'name': name, 'parents': [DRIVE_FLD]},
+            media_body=media,
+            fields='id'
+        )
+        resp = None
+        while resp is None:
+            status, resp = req.next_chunk()
+            if status:
+                print(f"    → {int(status.progress() * 100)}% uploaded")
+        print("    → Upload complete\n")
+    except Exception as e:
+        print(f"    → Upload skipped (error): {e}\n")
 
 def fit_circle(xs,ys):
     A = np.column_stack([2*xs,2*ys,np.ones_like(xs)])
@@ -135,78 +139,151 @@ def fit_circle(xs,ys):
     return cx,cy,r
 
 def click_points(img, n=8):
-    print("[4/7] Opening point-selection window...")
-    fig,ax = plt.subplots()
-    ax.imshow(img); ax.set_title(f"Click {n} edge points"); plt.axis('off')
+    """
+    Show the *color* image (or grayscale if no color passed) for point-picking.
+    Returns a list of (x,y) in image coords.
+    """
+    # if img is BGR (as cv.imread gives), convert to RGB for matplotlib
+    disp = cv.cvtColor(img, cv.COLOR_BGR2RGB) if img.ndim==3 else img
+
+    print(f"[1/4] Opening point‐selection window on color image...")
+    fig, ax = plt.subplots()
+    ax.imshow(disp)
+    ax.set_title(f"Click {n} edge points")
+    plt.axis('off')
+
     pts = plt.ginput(n, timeout=-1)
+
+    # close and block until it's really gone
     plt.close(fig)
-    # ensure it's fully closed
-    plt.pause(0.1)
+    while plt.fignum_exists(fig.number):
+        plt.pause(0.1)
+
     print(f"    → {len(pts)} points collected\n")
     return pts
 
-def detect_circle_roi(gray,src):
-    pts = click_points(cv.cvtColor(gray,cv.COLOR_GRAY2RGB),8)
-    if len(pts)<3:
+
+def detect_circle_roi(gray, src):
+    """
+    Interactive ROI workflow—but shows your *colored* src for picking.
+    """
+    # use src (color) not gray for the clicks
+    pts = click_points(src, 8)
+    if len(pts) < 3:
         print("    • insufficient clicks; skipping ROI detection\n")
-        return []
-    xs = np.array([p[0] for p in pts]); ys = np.array([p[1] for p in pts])
-    cx0,cy0,r0 = fit_circle(xs,ys)
+        return [], []
+
+    xs = np.array([p[0] for p in pts])
+    ys = np.array([p[1] for p in pts])
+    cx0, cy0, r0 = fit_circle(xs, ys)
     print(f"    • fitted center=({cx0:.1f},{cy0:.1f}), r≈{r0:.1f}")
-    print("[5/7] Computing HoughCircles in ROI…")
-    m = int(r0*1.2)
-    x0,y0 = max(0,int(cx0-m)), max(0,int(cy0-m))
-    x1,y1 = min(gray.shape[1],int(cx0+m)), min(gray.shape[0],int(cy0+m))
-    roi = gray[y0:y1,x0:x1]
-    cir = cv.HoughCircles(
+    print("[2/4] Computing HoughCircles in ROI…")
+
+    # build ROI from gray image
+    m  = int(r0 * 1.2)
+    x0 = max(0, int(cx0 - m));  y0 = max(0, int(cy0 - m))
+    x1 = min(gray.shape[1], int(cx0 + m));  y1 = min(gray.shape[0], int(cy0 + m))
+    roi = gray[y0:y1, x0:x1]
+
+    circles = cv.HoughCircles(
         roi, cv.HOUGH_GRADIENT, dp=1, minDist=2,
         param1=100, param2=10,
         minRadius=int(r0*0.85), maxRadius=int(r0*1.15)
     )
-    if cir is None:
+    if circles is None:
         print("    • no Hough candidates found\n")
-        return []
-    raw = np.uint16(np.around(cir[0]))
-    cands = [(c[0]+x0, c[1]+y0, c[2]) for c in raw]
-    def radial_err(c):
-        cx,cy,cr = c
-        return np.mean([abs(math.hypot(xi-cx,yi-cy)-cr) for xi,yi in pts])
-    sorted_cands = sorted(cands, key=radial_err)
-    print(f"    • {len(sorted_cands)} candidates ranked by radial error\n")
-    return sorted_cands
+        return [], []
 
-def pick_batch(src,cands,batch=100):
-    tmp = tempfile.mkdtemp(prefix="hough_preview_")
+    raw = np.uint16(np.around(circles[0]))
+    cands = [(c[0]+x0, c[1]+y0, c[2]) for c in raw]
+
+    # first 50 by accumulator order
+    raw_acc = cands[:50]
+
+    # next 50 by RMS radial‐error to your 8 clicks
+    def radial_rms(c):
+        cx, cy, cr = c
+        dists = np.hypot(xs - cx, ys - cy)
+        errs  = dists - cr
+        return math.sqrt(np.mean(errs*errs))
+
+    err_sorted = sorted(cands, key=radial_rms)[:50]
+    print(f"    • {len(raw_acc)} by accumulator, {len(err_sorted)} by error\n")
+
+    return raw_acc, err_sorted
+
+
+def pick_batch(src, cands, batch_size=100):
+    """
+    Show previews in batches of `batch_size`.  
+    Pick by index or:
+      * n = next batch
+      * s = skip entire image
+      * r = redo the click‐and‐ROI step
+    """
+    tmp = tempfile.mkdtemp(pre="hough_preview_")
     try:
-        tot = len(cands)
-        for s in range(0,tot,batch):
-            e = min(s+batch,tot)
-            for i,(cx,cy,cr) in enumerate(cands[s:e], s+1):
+        total = len(cands)
+        for start in range(0, total, batch_size):
+            end = min(start + batch_size, total)
+            for i, (cx, cy, cr) in enumerate(cands[start:end], start+1):
                 im = src.copy()
-                cv.circle(im,(int(cx),int(cy)),int(cr),(255,0,255),3)
-                cv.circle(im,(int(cx),int(cy)),max(3,int(cr*0.01)),(255,0,255),3)
-                cv.imwrite(f"{tmp}/cand_{i:04d}.jpg",im)
-            print(f"    • Preview {s+1}-{e} saved to {tmp}")
-            subprocess.run(['open',tmp] if sys.platform=='darwin' else ['xdg-open',tmp])
-            choice = input(f"    Pick 1–{tot}, 'n' next batch, 's' skip: ")
-            if choice.lower()=='n': continue
-            if choice.lower()=='s': return 'skip'
-            if choice.isdigit() and 1<=int(choice)<=tot:
-                return cands[int(choice)-1]
+                cv.circle(im, (int(cx), int(cy)), int(cr), (255, 0, 255), 3)
+                cv.circle(im, (int(cx), int(cy)), max(3, int(cr*0.01)), (255, 0, 255), 3)
+                cv.imwrite(os.path.join(tmp, f"cand_{i:04d}.jpg"), im)
+
+            print(f"    • Preview {start+1}-{end} saved to {tmp}")
+            subprocess.run(['open', tmp] if sys.platform=='darwin' else ['xdg-open', tmp])
+
+            choice = input(f"    Pick 1–{total}, 'n' next, 's' skip, 'r' redo clicks: ")
+            if choice.lower() == 'n':
+                continue
+            if choice.lower() == 's':
+                return 'skip'
+            if choice.lower() == 'r':
+                return 'redo'
+            if choice.isdigit():
+                idx = int(choice)
+                if 1 <= idx <= total:
+                    return cands[idx-1]
+        return None
     finally:
         shutil.rmtree(tmp)
-    return None
 
-def detect_circle(path,interactive):
+
+def detect_circle(path, interactive):
     src = cv.imread(path)
     if src is None:
         print(f"cannot open {path}\n"); return None
     gray = cv.medianBlur(cv.cvtColor(src,cv.COLOR_BGR2GRAY),5)
+
     if interactive:
-        cands = detect_circle_roi(gray,src)
-        if not cands: return None
-        return pick_batch(src,cands)
+        # get both lists
+        raw_acc, err_sorted = detect_circle_roi(gray, src)
+        if not raw_acc and not err_sorted:
+            return None
+
+        # 1) try RMS‐sorted first
+        choice = pick_batch(src, err_sorted)
+        if choice == 'redo':
+            # restart the whole click+ROI process
+            return detect_circle(path, True)
+        if choice and choice != 'skip':
+            return choice
+
+        # 2) if nothing picked, try accumulator‐sorted
+        print("    • no pick from error‐sorted list; showing accumulator‐sorted now\n")
+        choice = pick_batch(src, raw_acc)
+        if choice == 'redo':
+            return detect_circle(path, True)
+        if choice and choice != 'skip':
+            return choice
+
+        # user skipped both
+        return None
+
     else:
+        # non‐interactive: biggest circle
         cir = cv.HoughCircles(
             gray, cv.HOUGH_GRADIENT, dp=1, minDist=2,
             param1=100, param2=10,
@@ -214,11 +291,12 @@ def detect_circle(path,interactive):
             maxRadius=int(min(gray.shape)*0.5)
         )
         if cir is None:
-            print("    • No Hough detected; skipping\n")
+            print("    • No circles detected; skipping\n")
             return None
         raw = np.uint16(np.around(cir[0]))
         best = max(raw.tolist(), key=lambda c: c[2])
         return tuple(best)
+
 
 def human_size(b):
     for u in ['B','KB','MB','GB']:
@@ -243,17 +321,19 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     for fn in tqdm(files, desc="Files"):
         key = key_from(fn)
+        path = os.path.join(args.input_dir, fn)
+        sz = os.path.getsize(path)
+
         if layout_map.get(key,'') not in LAYOUTS_OK:
-            print(f" skipping {fn}: layout != allowed")
+            print(f"\n skipping {fn} ({human_size(sz)}): layout not (currently) allowed")
             continue
         if key in done:
-            ans = input(f"{fn} already done—skip? (y/n): ")
+            ans = input(f"\n{fn} ({human_size(sz)}) already done—skip? (y/n): ")
             if ans.lower().startswith('y'):
                 print(" skipped\n")
                 continue
 
-        path = os.path.join(args.input_dir, fn)
-        sz = os.path.getsize(path)
+        
         print(f"\n→ Processing {fn} ({human_size(sz)})")
         t0 = time.time()
 
@@ -263,17 +343,21 @@ def main():
             continue
 
         x,y,r = res
+
+        save_metadata(key, x, y, r, layout_map[key])
+
         src = cv.imread(path)
         cv.circle(src,(int(x),int(y)),int(r),(255,0,255),3)
         cv.circle(src,(int(x),int(y)),max(3,int(r*0.01)),(255,0,255),3)
         out = os.path.join(args.output_dir, fn)
         cv.imwrite(out, src)
+
         upload_to_drive(out, fn)
+        
         if args.show:
             plt.imshow(cv.cvtColor(src,cv.COLOR_BGR2RGB))
             plt.title(fn); plt.axis('off'); plt.show()
-
-        save_metadata(key, x, y, r, layout_map[key])
+        
         dt = time.time() - t0
         print(f"Elapsed {int(dt//60)}m{dt%60:.1f}s\n")
 

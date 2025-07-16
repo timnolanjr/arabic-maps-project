@@ -1,19 +1,24 @@
+# Core image-processing & interactivity
 opencv-python>=4.5.5
 numpy>=1.21
 matplotlib>=3.4
 tqdm>=4.60
 
-# For Google Sheets and Google Drive access
+# Google Sheets & Drive
 gspread>=5.7.0
 google-auth>=2.16.0
-google-api-python-client>=2.0.0
 google-auth-httplib2>=0.1.0
-google-auth-oauthlib>=0.4.0
+google-api-python-client>=2.0.0
 
-
-# For loading .env
+# Environment variables
 python-dotenv>=1.0.0
 
-# For in-memory data handling (optional, if you use Pandas)
+# Data handling
 pandas>=1.5.0
 
+# If you show images with PIL (e.g. in your OCR scripts)
+Pillow>=9.0
+
+# If you use EasyOCR
+easyocr>=1.6.2
+torch>=1.13.0   # or your desired torch version
