@@ -1,84 +1,144 @@
+# Arabic Maps Project
 
-Arabic Maps Project  
-===================
+A digital humanities toolkit for analyzing circular world maps in Arabic manuscripts.
 
-A toolkit for ingesting, processing, and annotating digitized circular maps from Arabic manuscripts. This repository provides:  
-- Automated metadata extraction (file size, dimensions, color space)  
-- Google Sheets integration for master metadata 
-- Circle detection (via Hough Transform) with interactive review  
-- Offline CSV for redundancy and batch reporting  
-- Utilities to find missing files, extract embedded PDF images, and fill in blank sheet entries  
+This project enables automated detection, transcription, and spatial comparison of circular manuscript maps—especially those representing *al-Baḥr al-Muḥīṭ* (The Encircling Ocean). It brings together computer vision, OCR, and metadata integration to support large-scale analysis of cartographic variation, copyist influence, and map reuse across manuscripts.
 
-Features  (As of 8 July 2025)
---------  
-**Raw_Maps_find_missing.py**  
-Identify which files from the Google Spreadsheet are missing locally.
+## Features
 
-**fill_sheet_metadata.py**  
-Scan your a Maps directory, read file properties, and backfill empty “File Type”, “File Size”, “Dimensions (COLxROW)”, and “Color Space” cells in the Google Spreadsheet.
+| Module | Description |
+|--------|-------------|
+| Circle Detection | Hough Transform with interactive point-click refinement to identify circular map frames |
+| Arabic OCR | Full-page optical character recognition using QARI-OCR and EasyOCR |
+| Toponym Projection | Extracts Arabic place names and maps their centroids onto polar coordinates |
+| Map Comparison | Enables quantitative analysis of variation across maps in terms of structure, labeling, and reuse |
+| Metadata Integration | Syncs with Google Sheets for annotation, progress tracking, and redundancy via local CSV |
+| Utility Scripts | Includes tools to find missing files, extract embedded images from PDFs, and fill in blank spreadsheet entries |
 
-**preprocessing.py**  
-  - Reads “Map Layout” from the Google Sheet
-  - Currently filters to full-circle layouts (one_page_full, two_page_full)
-  - Runs Hough circle detection (interactive or automatic) to find the map's outer perimeter. As a reminder, we are aiming for the outer edge of [al-Baḥr al-Muḥīṭ, *The Encircling Ocean/Sea*](https://referenceworks.brill.com/display/entries/EIEO/SIM-1064.xml?rskey=arnJ0m&result=1).
-  - Annotates and saves results, updates “Circle Center X” (pixels), "Circle Center Y" (pixels), and "Circle Radius" (pixels) in the Google Sheet. 
-  - Logs everything back to both Google Sheets and an offline CSV
+## Pipeline Overview
 
-**extract_pdf_images.py**  
-Extracts embedded images from any PDFs in your raw folder.
-
-Getting Started  
----------------  
-1. Clone the repo  
+```
+               Raw Map Scans (TIFF, JPG)
+                        │
+                        ▼
+             Circle Detection (Hough)
+                        │
+                        ▼
+           Arabic OCR (EasyOCR/Strabo/Qari)
+                        │
+                        ▼
+              Toponym Extraction
+                        │
+                        ▼
+          Polar Coordinate Projection
+                        │
+                        ▼
+       Map Comparison & Quantitative Analysis
 ```
 
-git clone [https://github.com/your-org/arabic-maps-project.git](https://github.com/your-org/arabic-maps-project.git)
+## Directory Layout
+
+```
+.
+├── data/
+│   ├── Raw_Maps/               # Raw scanned maps
+│   └── map_metadata.csv        # Local mirror of Google Sheet metadata
+├── src/
+│   ├── preprocessing.py        # Circle detection + metadata sync
+│   ├── qari_ocr.py             # Full-page Arabic OCR using Qwen2VL
+│   ├── easyocr_detect.py       # EasyOCR CRAFT-based region detector
+│   ├── strabo_detect.py        # Wrapper for Strabo or Tesseract OCR
+│   ├── fill_sheet_metadata.py  # Fill missing metadata in sheet
+│   ├── Raw_Maps_find_missing.py# Sanity check for missing files
+│   ├── extract_pdf_images.py   # Extract embedded images from PDFs
+│   └── test_sheets.py          # Diagnostics for Google Sheets API
+├── requirements.txt
+├── .env                        # Your credentials and config
+└── README.md
+```
+
+## Getting Started
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/your-org/arabic-maps-project.git
 cd arabic-maps-project
-
 ```
 
-2. Install dependencies  
-```
+### 2. Install dependencies
 
+```bash
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-
 ```
 
-3. Configure your environment  
-Create a `.env` in the project root with:  
+### 3. Configure your environment
+
+Create a `.env` file in the project root with:
+
+```
+GOOGLE_SHEETS_CREDENTIALS=path/to/creds.json
+SHEET_ID=your-google-sheet-id
+OFFLINE_CSV=data/map_metadata.csv
+GOOGLE_DRIVE_FOLDER_ID=your-drive-folder-id  # optional
 ```
 
-GOOGLE\_SHEETS\_CREDENTIALS=path/to/creds.json
-SHEET\_ID=<your-sheet-id>
-OFFLINE\_CSV=data/map\_metadata.csv
+### 4. Prepare your Google Sheet
 
-````
+Ensure it has columns including:
 
-4. Populate your sheet  
-Ensure your Google Sheet has columns matching the header row in `data/map_metadata.csv`.
+- File Name
+- File Type
+- File Size
+- Dimensions (COLxROW)
+- Color Space
+- Map Layout
+- Circle Center X, Circle Center Y, Circle Radius
 
-5. Run the tools  
-- Find missing raw files:  
-  ```
-  python src/Raw_Maps_find_missing.py
-  ```  
-- Backfill blank metadata cells:  
-  ```
-  python src/fill_sheet_metadata.py
-  ```  
-- Detect circles and annotate:  
-  ```
-  python src/preprocessing.py \
-    -i data/Raw_Maps \
-    -o data/Perfect_Maps_Processed \
-    [--interactive] [--show]
-  ```
+## Running the Tools
 
-Directory Layout  
-----------------  
-````
+### Find missing files
+
+```bash
+python src/Raw_Maps_find_missing.py
+```
+
+### Fill blank metadata from disk
+
+```bash
+python src/fill_sheet_metadata.py
+```
+
+### Extract images from PDFs
+
+```bash
+python src/extract_pdf_images.py data/Raw_Maps
+```
+
+### Detect map circle boundaries
+
+```bash
+python src/preprocessing.py \
+  -i data/Raw_Maps \
+  -o data/Processed_Maps \
+  --interactive
+```
+
+### Run full-page OCR with QARI
+
+```bash
+python src/qari_ocr.py data/Raw_Maps --device cuda
+```
+
+## Background
+
+Circular maps abound in Arabic manuscripts, but few studies focus on the maps themselves rather than the geographers who authored them. This project treats the map as a living manuscript object—copied, varied, and adapted. By automating detection, transcription, and coordinate mapping, we reveal copyist behavior, inter-manuscript relationships, and patterns of transmission invisible to traditional cataloging.
+
+## License
+
+MIT License. See LICENSE file for details.
 
 .
 ├── data/
