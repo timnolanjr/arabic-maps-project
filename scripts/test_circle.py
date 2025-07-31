@@ -1,63 +1,22 @@
-# scripts/test_circle.py
-
-import sys
-import os
-# Ensure src directory is on the PYTHONPATH
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'src')))
-
+#!/usr/bin/env python3
+import argparse
 from pathlib import Path
-import cv2
-import matplotlib.pyplot as plt
-from circle import (
-    median_blur_and_gray,
-    detect_circle_hough,
-    draw_multiple_circles,
-    draw_circle,
-    save_circle_params,
-    get_output_paths
-)
-
+from src.circle import interactive_detect_and_save, batch_detect_and_save
 
 def main():
-    # Define input and base output directory
-    input_path = Path("/Users/tim/Documents/Projects/arabic-maps-project/data/Raw_Maps/al-Qazwīnī_Arabic MSS 575.jpg")
-    base_output_dir = Path("data/Processed_Maps")
+    p = argparse.ArgumentParser()
+    p.add_argument("input", help="Path to input image")
+    p.add_argument("-o","--output-dir", default="data/processed_maps")
+    p.add_argument("--interactive", action="store_true")
+    p.add_argument("--num-candidates", type=int, default=100)
+    args = p.parse_args()
 
-    # Load and preprocess image
-    img = cv2.imread(str(input_path))
-    gray = median_blur_and_gray(img)
+    img = Path(args.input)
+    out = Path(args.output_dir)
+    if args.interactive:
+        interactive_detect_and_save(img, out)
+    else:
+        batch_detect_and_save(img, out, args.num_candidates)
 
-    # Detect candidate circles
-    candidates = detect_circle_hough(gray, top_k=5)
-    if not candidates:
-        print("No circles detected.")
-        return
-
-    # Get paths
-    paths = get_output_paths(input_path, base_output_dir)
-
-    # Save and display all candidates
-    guess_img = draw_multiple_circles(img, candidates)
-    cv2.imwrite(str(paths["circle_guesses_img"]), guess_img)
-    plt.imshow(cv2.cvtColor(guess_img, cv2.COLOR_BGR2RGB))
-    plt.title("Top Circle Candidates")
-    plt.axis('off')
-    plt.show()
-
-    # Prompt user to pick best circle
-    for i, (cx, cy, r) in enumerate(candidates, 1):
-        print(f"[{i}] center=({cx}, {cy}), radius={r}")
-    choice = int(input(f"Select best circle [1-{len(candidates)}]: "))
-    cx, cy, r = candidates[choice - 1]
-
-    # Save final result
-    final_img = draw_circle(img, cx, cy, r)
-    cv2.imwrite(str(paths["circle_final_img"]), final_img)
-    save_circle_params(paths["circle_params_json"], cx, cy, r)
-
-    print(f"Final circle saved to {paths['circle_final_img']}")
-    print(f"Parameters saved to {paths['circle_params_json']}")
-
-
-if __name__ == "__main__":
+if __name__=="__main__":
     main()

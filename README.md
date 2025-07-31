@@ -1,160 +1,137 @@
 # Arabic Maps Project
 
-A digital humanities toolkit for analyzing circular world maps in Arabic manuscripts.
+A digital humanities toolkit for large-scale analysis of circular world maps in medieval Arabic manuscripts.
 
-This project enables automated detection, transcription, and spatial comparison of circular manuscript maps—especially those representing *al-Baḥr al-Muḥīṭ* (The Encircling Ocean). It brings together computer vision, OCR, and metadata integration to support large-scale analysis of cartographic variation, copyist influence, and map reuse across manuscripts.
+## Current Status
+
+- **Circle Detection**: Fully interactive and batch modes via `src/circle.py` and `scripts/test_circle.py`.
+- **Edge Detection**: Interactive ROI-based and batch detection via `src/edges.py` and `scripts/test_edges.py`.
+- **Unified Parameters**: Circle and edge parameters (`center_x`, `center_y`, `radius`, `rho`, `theta`) merged into a single `params.json` per image.
+- **Coordinate Mapping**: Pipeline for converting map frames into a common polar coordinate system is in place.
+- **Next Steps**: Integrate OCR, toponym extraction, projection, and map comparison modules.
 
 ## Features
 
-| Module | Description |
-|--------|-------------|
-| Circle Detection | Hough Transform with interactive point-click refinement to identify circular map frames |
-| Arabic OCR | Full-page optical character recognition using QARI-OCR and EasyOCR |
-| Toponym Projection | Extracts Arabic place names and maps their centroids onto polar coordinates |
-| Map Comparison | Enables quantitative analysis of variation across maps in terms of structure, labeling, and reuse |
-| Metadata Integration | Syncs with Google Sheets for annotation, progress tracking, and redundancy via local CSV |
-| Utility Scripts | Includes tools to find missing files, extract embedded images from PDFs, and fill in blank spreadsheet entries |
+| Module              | Description                                                                 |
+|---------------------|-----------------------------------------------------------------------------|
+| Circle Detection    | Hough-based detection with interactive refinement or batch candidate generation |
+| Edge Detection      | Hough lines in a vertical ROI around seed clicks to find the top manuscript edge |
+| Parameter Management| Merge circle & edge parameters via `update_json` into `params.json`          |
+| CLI Tools           | `scripts/test_circle.py`, `scripts/pick_circle.py`, `scripts/test_edges.py` |
+| Utilities           | Preprocessing (`median_blur_and_gray`), I/O helpers (`save_json`, `update_json`) |
 
 ## Pipeline Overview
 
 ```
-               Raw Map Scans (TIFF, JPG)
-                        │
-                        ▼
-             Circle Detection (Hough)
-                        │
-                        ▼
-           Arabic OCR (EasyOCR/Strabo/Qari)
-                        │
-                        ▼
-              Toponym Extraction
-                        │
-                        ▼
-          Polar Coordinate Projection
-                        │
-                        ▼
-       Map Comparison & Quantitative Analysis
+Raw Map Scans (TIFF, JPG, PNG)
+    │
+    ├─ Circle Detection → circle_final.jpg + params.json {center_x, center_y, radius}
+    │
+    ├─ Edge Detection   → edge_final.jpg   + params.json {rho, theta}
+    │
+    └─ (Future) OCR → Toponym Extraction → Polar Projection → Map Comparison
 ```
+
+## Setup
+
+1. **Python & venv**  
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   pip install -r requirements.txt
+   ```
+
+2. **(Optional) pyenv**  
+   ```bash
+   pyenv install 3.11.5
+   pyenv local 3.11.5
+   ```
+
+3. **(Optional) direnv**  
+   ```bash
+   brew install direnv
+   echo "layout python3" > .envrc
+   direnv allow
+   ```
+
+## Usage
+
+### Circle Detection
+
+```bash
+# Single image, interactive:
+python scripts/test_circle.py data/raw_maps/image.jpg --interactive
+
+# Batch candidate generation:
+python scripts/test_circle.py data/raw_maps/*.jpg
+```
+
+### Review Circle Candidates
+
+```bash
+python scripts/pick_circle.py data/raw_maps/image
+```
+
+### Edge Detection
+
+```bash
+# Interactive:
+python scripts/test_edges.py data/raw_maps/image.jpg --interactive
+
+# Batch:
+python scripts/test_edges.py data/raw_maps/*.jpg
+```
+
+### Resulting Parameters
+
+After both steps, each image folder contains `params.json`:
+
+```json
+{
+  "center_x": 123.4,
+  "center_y": 234.5,
+  "radius": 345.6,
+  "rho": 78.9,
+  "theta": 1.23
+}
+```
+
+## Roadmap
+
+- **OCR Integration**  
+  Implement wrappers for EasyOCR, QARI, and Strabo pipelines to extract Arabic toponyms.
+- **Toponym Extraction & Cleaning**  
+  Normalize OCR output, deduplicate place names, and compute label centroids.
+- **Polar Projection**  
+  Convert toponyms’ centroids into polar coordinates relative to detected circle and edge.
+- **Map Comparison & Clustering**  
+  Compute similarity metrics, cluster maps by style and content, and visualize variation.
+- **Metadata Sync**  
+  Enhance Google Sheets/Drive integration with progress tracking and automated logging.
+- **Packaging & Distribution**  
+  Dockerize the pipeline, add CLI documentation, and publish on PyPI.
+
 
 ## Directory Layout
 
 ```
-.
-├── data/
-│   ├── Raw_Maps/               # Raw scanned maps
-│   └── map_metadata.csv        # Local mirror of Google Sheet metadata
+arabic-maps-project/
+├── data/raw_maps/               # Original scans
+├── scripts/
+│   ├── test_circle.py
+│   ├── pick_circle.py
+│   └── test_edges.py
 ├── src/
-│   ├── preprocessing.py        # Circle detection + metadata sync
-│   ├── qari_ocr.py             # Full-page Arabic OCR using Qwen2VL
-│   ├── easyocr_detect.py       # EasyOCR CRAFT-based region detector
-│   ├── strabo_detect.py        # Wrapper for Strabo or Tesseract OCR
-│   ├── fill_sheet_metadata.py  # Fill missing metadata in sheet
-│   ├── Raw_Maps_find_missing.py# Sanity check for missing files
-│   ├── extract_pdf_images.py   # Extract embedded images from PDFs
-│   └── test_sheets.py          # Diagnostics for Google Sheets API
+│   ├── circle.py
+│   ├── edges.py
+│   └── utils/
+│       ├── image.py
+│       └── io.py
 ├── requirements.txt
-├── .env                        # Your credentials and config
 └── README.md
 ```
-
-## Getting Started
-
-### 1. Clone the repo
-
-```bash
-git clone https://github.com/your-org/arabic-maps-project.git
-cd arabic-maps-project
-```
-
-### 2. Install dependencies
-
-```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-### 3. Configure your environment
-
-Create a `.env` file in the project root with:
-
-```
-GOOGLE_SHEETS_CREDENTIALS=path/to/creds.json
-SHEET_ID=your-google-sheet-id
-OFFLINE_CSV=data/map_metadata.csv
-GOOGLE_DRIVE_FOLDER_ID=your-drive-folder-id  # optional
-```
-
-### 4. Prepare your Google Sheet
-
-Ensure it has columns including:
-
-- File Name
-- File Type
-- File Size
-- Dimensions (COLxROW)
-- Color Space
-- Map Layout
-- Circle Center X, Circle Center Y, Circle Radius
-
-## Running the Tools
-
-### Find missing files
-
-```bash
-python src/Raw_Maps_find_missing.py
-```
-
-### Fill blank metadata from disk
-
-```bash
-python src/fill_sheet_metadata.py
-```
-
-### Extract images from PDFs
-
-```bash
-python src/extract_pdf_images.py data/Raw_Maps
-```
-
-### Detect map circle boundaries
-
-```bash
-python src/preprocessing.py \
-  -i data/Raw_Maps \
-  -o data/Processed_Maps \
-  --interactive
-```
-
-### Run full-page OCR with QARI
-
-```bash
-python src/qari_ocr.py data/Raw_Maps --device cuda
-```
-
-## Background
-
-Circular maps abound in Arabic manuscripts, but few studies focus on the maps themselves rather than the geographers who authored them. This project treats the map as a living manuscript object—copied, varied, and adapted. By automating detection, transcription, and coordinate mapping, we reveal copyist behavior, inter-manuscript relationships, and patterns of transmission invisible to traditional cataloging.
 
 ## License
 
-MIT License. See LICENSE file for details.
+MIT License.
 
-.
-├── data/
-│   ├── Raw\_Maps/                  # Raw scans (jpg, png, tiff, pdf…)
-│   └── map\_metadata.csv           # Offline CSV mirror of Google Sheet
-├── src/
-│   ├── Raw\_Maps\_find\_missing.py
-│   ├── fill\_sheet\_metadata.py
-│   ├── preprocessing.py
-│   └── extract\_pdf\_images.py     # Utility for PDF image extraction
-├── .env                            # Credentials & config
-├── requirements.txt
-└── README.md
-
-```
-
-License  
--------  
-MIT License. See LICENSE file for full text.  
