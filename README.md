@@ -4,7 +4,7 @@ A digital humanities toolkit for large-scale analysis of circular world maps in 
 
 ## Motivation
 
-Medieval Arabic circular maps—with Mecca at the center—have long been studied
+Medieval Arabic circular maps, with Mecca at the center, have long been studied
 for their geographical insights, but scholars rarely compare them at the level
 of individual manuscript copyists.  Each surviving map is a distinct artifact
 shaped by scribal choices—subtle shifts in framing, scale, or label placement
@@ -12,8 +12,8 @@ that reflect workshops, regional tastes, or evolving worldviews.
 
 By automatically detecting each map’s circular frame and projecting toponym
 labels into polar coordinates, we can transform these subtle variations into
-data.  Quantitative comparison across hundreds of maps then reveals patterns
-of circulation (shared workshop practices), temporal shifts in cultural
+data.  Quantitative comparison across hundreds of maps may reveal patterns
+of circulation, temporal shifts in cultural
 perspective, and copyist creativity that text-only analysis alone cannot
 capture.  Our toolkit brings a new, data-driven lens to the rich tradition of
 Arabic cartography.
