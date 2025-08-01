@@ -21,11 +21,7 @@ Arabic cartography.
 ![Al-Idrīsī map, original (left) and flipped modern orientation (right)](assets/images/al-idrisi-1001inventions.jpg)
 
 *Left: Original Al-Idrīsī 12th century map with Mecca (Makkah) at the top and Europe in the lower right.  
-Right: Flipped view to match our modern North-up convention.*  [\[1\]](https://www.1001inventions.com/maps/)
-
-![Ancient Greek “Seven Seas” view](assets/images/seven-seas-greek.webp)
-
-*Medieval Greeks identified the “Seven Seas” differently than later Arab and European sources—an early example of how cultural perspective shaped mapping.*  [\[2\]](https://brilliantmaps.com/the-7-seas/)
+Right: Flipped view to match Western-style north-up orientation.*  [\[1\]](https://www.1001inventions.com/maps/)
 
 ![Al-Qazwīnī Map Example](assets/images/al-Qazwīnī_Arabic_MSS_575.jpg)
 
