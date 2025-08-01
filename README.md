@@ -4,7 +4,7 @@ A digital humanities toolkit for large-scale analysis of circular world maps in 
 
 ## Motivation
 
-Medieval Arabic circular maps—with Mecca at the center—have long been studied
+Medieval Arabic circular maps, with Mecca at the center, have long been studied
 for their geographical insights, but scholars rarely compare them at the level
 of individual manuscript copyists.  Each surviving map is a distinct artifact
 shaped by scribal choices—subtle shifts in framing, scale, or label placement
@@ -12,8 +12,8 @@ that reflect workshops, regional tastes, or evolving worldviews.
 
 By automatically detecting each map’s circular frame and projecting toponym
 labels into polar coordinates, we can transform these subtle variations into
-data.  Quantitative comparison across hundreds of maps then reveals patterns
-of circulation (shared workshop practices), temporal shifts in cultural
+data.  Quantitative comparison across hundreds of maps may reveal patterns
+of circulation, temporal shifts in cultural
 perspective, and copyist creativity that text-only analysis alone cannot
 capture.  Our toolkit brings a new, data-driven lens to the rich tradition of
 Arabic cartography.
@@ -21,11 +21,7 @@ Arabic cartography.
 ![Al-Idrīsī map, original (left) and flipped modern orientation (right)](assets/images/al-idrisi-1001inventions.jpg)
 
 *Left: Original Al-Idrīsī 12th century map with Mecca (Makkah) at the top and Europe in the lower right.  
-Right: Flipped view to match our modern North-up convention.*  [\[1\]](https://www.1001inventions.com/maps/)
-
-![Ancient Greek “Seven Seas” view](assets/images/seven-seas-greek.webp)
-
-*Medieval Greeks identified the “Seven Seas” differently than later Arab and European sources—an early example of how cultural perspective shaped mapping.*  [\[2\]](https://brilliantmaps.com/the-7-seas/)
+Right: Flipped view to match Western-style north-up orientation.*  [\[1\]](https://www.1001inventions.com/maps/)
 
 ![Al-Qazwīnī Map Example](assets/images/al-Qazwīnī_Arabic_MSS_575.jpg)
 
