@@ -4,17 +4,40 @@ A digital humanities toolkit for large-scale analysis of circular world maps in 
 
 ## Motivation
 
-Historical world maps from medieval Arabic manuscripts reveal not only geographic knowledge but also cultural and religious orientations. For instance, the famous 12th century Al-Idrisi map places Mecca at the top above Arabia and positions Europe in the lower right, reflecting both pilgrimage and trade routes [1001 Inventions](https://www.1001inventions.com/maps/). Likewise, the concept of the “Seven Seas” shifted over time—from the Ancient Greek list that included the Black Sea and Red Sea to later Arabian and European interpretations that reshaped maritime boundaries [Brilliant Maps](https://brilliantmaps.com/the-7-seas/).  
+Medieval Arabic circular maps—with Mecca at the center—have long been studied
+for their geographical insights, but scholars rarely compare them at the level
+of individual manuscript copyists.  Each surviving map is a distinct artifact
+shaped by scribal choices—subtle shifts in framing, scale, or label placement
+that reflect workshops, regional tastes, or evolving worldviews.
 
-This project seeks to bring these rich cartographic artifacts into the digital age: detecting circular map frames, extracting edge and text features, normalizing toponyms, and ultimately comparing styles and contents across hundreds of medieval maps.
+By automatically detecting each map’s circular frame and projecting toponym
+labels into polar coordinates, we can transform these subtle variations into
+data.  Quantitative comparison across hundreds of maps then reveals patterns
+of circulation (shared workshop practices), temporal shifts in cultural
+perspective, and copyist creativity that text-only analysis alone cannot
+capture.  Our toolkit brings a new, data-driven lens to the rich tradition of
+Arabic cartography.
+
+![Al-Idrīsī map, original (left) and flipped modern orientation (right)](assets/images/al-idrisi-1001inventions.jpg)
+
+*Left: Original Al-Idrīsī 12th century map with Mecca (Makkah) at the top and Europe in the lower right.  
+Right: Flipped view to match our modern North-up convention.*  [\[1\]](https://www.1001inventions.com/maps/)
+
+![Ancient Greek “Seven Seas” view](assets/images/seven-seas-greek.webp)
+
+*Medieval Greeks identified the “Seven Seas” differently than later Arab and European sources—an early example of how cultural perspective shaped mapping.*  [\[2\]](https://brilliantmaps.com/the-7-seas/)
+
+![Al-Qazwīnī Map Example](assets/images/al-Qazwīnī_Arabic_MSS_575.jpg)
+
+*Map extracted from a sixteenth-century Ottoman manuscript of Persian cosmographer and geographer al-Qazwīnī’s “The Marvels of Creation.”*
 
 
-![Al-Idrisi 12th century map (source: 1001 Inventions)](https://www.1001inventions.com/wp-content/uploads/2018/05/MusCivMaps-01.jpg)
-*Left: Original Al-Idrisi 12th century map with Mecca (Makkah) at the top and Europe in the lower right.  
-Right: Flipped view to match our modern North-up convention.*  
+## Features
 
-![The Seven Seas According to the Ancient Greeks (source: Brilliant Maps)](https://brilliantmaps.com/wp-content/uploads/7-seas-greek.webp)
-*Medieval Greeks identified the “Seven Seas” differently than later Arab and European sources—an early example of how cultural perspective shaped mapping.*  
+- **Frame Alignment**: Hough-circle + top-edge registration  
+- **Toponym Extraction**: CNN-based text detection + fine-tuned Arabic OCR  
+- **Coordinate Normalization**: Polar coordinates relative to map radius  
+- **Scalable Analysis**: Measure and visualize toponym shifts across manuscripts  
 
 
 ## Current Status
