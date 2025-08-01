@@ -1,24 +1,37 @@
-# Core image-processing & interactivity
-easyocr>=1.6.2
+# Environment variables
+python-dotenv>=1.0.0
+
+# Testing
+pytest>=8.0
+
+# Core image‑processing 
+numpy<2.0
+pandas>=1.5.0
+opencv-python>=4.11.0.86
+torch==2.0.1
+torchaudio==2.0.2
+torchvision==0.15.2
+
+# Primary OCR dependencies
+openmim>=0.3.7          # helper CLI for installing OpenMMLab packages
+mmcv==2.0.0		# OpenCV/MMLab wrapper used by MMOCR
+mmengine==0.10.7        # Engine framework required by MMOCR
+mmdet==3.1.0            # Object detection core used by MMOCR
+mmocr==1.0.1            # provides DBNet, PSENet, TextSnake detectors
+
+# Alternative end‑to‑end OCR libraries
+easyocr>=1.7.1          # simple detector+recogniser
+paddleocr>=2.6.1        # optional: PP‑OCR v3/v4 with Arabic model
+ArabicOcr>=1.1.6        # optional: dedicated Arabic OCR wrapper
+
+# Interactivity
 matplotlib>=3.4
-numpy>=1.21
-opencv-python>=4.5.5
 Pillow>=9.0
 tqdm>=4.60
-torch>=1.13.0
 
 # Google Sheets & Drive
 google-api-python-client>=2.0.0
 google-auth>=2.16.0
 google-auth-httplib2>=0.1.0
 gspread>=5.7.0
-
-# Environment variables
-python-dotenv>=1.0.0
-
-# Data handling
-pandas>=1.5.0
-
-# Testing
-pytest>=8.0
 

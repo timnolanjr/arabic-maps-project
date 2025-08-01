@@ -2,6 +2,21 @@
 
 A digital humanities toolkit for large-scale analysis of circular world maps in medieval Arabic manuscripts.
 
+## Motivation
+
+Historical world maps from medieval Arabic manuscripts reveal not only geographic knowledge but also cultural and religious orientations. For instance, the famous 12th century Al-Idrisi map places Mecca at the top above Arabia and positions Europe in the lower right, reflecting both pilgrimage and trade routes [1001 Inventions](https://www.1001inventions.com/maps/). Likewise, the concept of the “Seven Seas” shifted over time—from the Ancient Greek list that included the Black Sea and Red Sea to later Arabian and European interpretations that reshaped maritime boundaries [Brilliant Maps](https://brilliantmaps.com/the-7-seas/).  
+
+This project seeks to bring these rich cartographic artifacts into the digital age: detecting circular map frames, extracting edge and text features, normalizing toponyms, and ultimately comparing styles and contents across hundreds of medieval maps.
+
+
+![Al-Idrisi 12th century map (source: 1001 Inventions)](https://www.1001inventions.com/wp-content/uploads/2018/05/MusCivMaps-01.jpg)
+*Left: Original Al-Idrisi 12th century map with Mecca (Makkah) at the top and Europe in the lower right.  
+Right: Flipped view to match our modern North-up convention.*  
+
+![The Seven Seas According to the Ancient Greeks (source: Brilliant Maps)](https://brilliantmaps.com/wp-content/uploads/7-seas-greek.webp)
+*Medieval Greeks identified the “Seven Seas” differently than later Arab and European sources—an early example of how cultural perspective shaped mapping.*  
+
+
 ## Current Status
 
 - **Circle Detection**: Fully interactive and batch modes via `src/circle.py` and `scripts/test_circle.py`.
@@ -43,8 +58,8 @@ Raw Map Scans (TIFF, JPG, PNG)
 
 2. **(Optional) pyenv**  
    ```bash
-   pyenv install 3.11.5
-   pyenv local 3.11.5
+   pyenv install 3.11.6
+   pyenv local 3.11.6
    ```
 
 3. **(Optional) direnv**  
@@ -98,6 +113,8 @@ After both steps, each image folder contains `params.json`:
 
 ## Roadmap
 
+- **Text Detection**
+  
 - **OCR Integration**  
   Implement wrappers for EasyOCR, QARI, and Strabo pipelines to extract Arabic toponyms.
 - **Toponym Extraction & Cleaning**  
