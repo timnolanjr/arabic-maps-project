@@ -28,6 +28,18 @@ The following detectors are currently provided:
     clusters of edges that form text.  Works best when characters have
     distinct edges but may merge neighbouring words into a single box.
 
+``detect_text_sobel``
+    Computes Sobel gradients in the x and y directions to emphasise
+    edges, thresholds the gradient magnitude and dilates to connect
+    strokes.  This simple technique performs well on documents where
+    characters exhibit strong edge responses.
+
+``detect_text_gradient``
+    Uses a morphological gradient (dilation minus erosion) to highlight
+    transitions in the image, thresholds the result and dilates to
+    connect nearby strokes.  This approach can be effective on
+    scanned documents and maps with moderate noise.
+
 ``draw_bounding_boxes``
     Given an image and a list of bounding boxes, returns a copy of
     the image with rectangles drawn around each detected region.
@@ -35,14 +47,13 @@ The following detectors are currently provided:
 Example usage::
 
     from pathlib import Path
-    from src.text import detect_text_morphology, draw_bounding_boxes
+    from src.text_detection import detect_text_morphology, draw_bounding_boxes
     import cv2
 
     img = cv2.imread("/path/to/map.jpg")
     boxes = detect_text_morphology(img)
     annotated = draw_bounding_boxes(img, boxes)
     cv2.imwrite("output.jpg", annotated)
-
 """
 
 from __future__ import annotations
@@ -53,6 +64,7 @@ import cv2
 import numpy as np
 
 
+# A bounding box is represented as (x, y, width, height)
 BoundingBox = Tuple[int, int, int, int]
 
 
@@ -246,7 +258,127 @@ def detect_text_canny(img: np.ndarray) -> List[BoundingBox]:
     return _non_max_suppression(boxes)
 
 
-def draw_bounding_boxes(img: np.ndarray, boxes: List[BoundingBox], color=(0, 255, 0), thickness: int = 2) -> np.ndarray:
+def detect_text_sobel(img: np.ndarray) -> List[BoundingBox]:
+    """Detect text regions using Sobel gradient magnitude and dilation.
+
+    This detector computes the horizontal and vertical Sobel gradients to
+    emphasise edge information in the image.  The gradient magnitude is
+    thresholded to produce a binary mask of strong edges.  A horizontal
+    dilation connects neighbouring strokes into blobs corresponding to
+    words or lines.  Detected contours are filtered by size and aspect
+    ratio.  This approach performs well on high‑contrast documents where
+    characters have clear edges.
+
+    Parameters
+    ----------
+    img:
+        Input image in BGR or grayscale format.
+
+    Returns
+    -------
+    List[BoundingBox]
+        A list of bounding boxes enclosing detected text regions.
+    """
+    gray = _prepare_image(img)
+
+    # Compute Sobel gradients in x and y directions
+    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+    magnitude = cv2.magnitude(sobel_x, sobel_y)
+    # Convert magnitude to 8‑bit and normalise
+    mag8 = cv2.convertScaleAbs(magnitude)
+
+    # Threshold the gradient image using Otsu's method
+    _, binary = cv2.threshold(
+        mag8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+
+    # Dilate with a horizontal kernel to merge adjacent characters
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+    dilated = cv2.dilate(binary, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(
+        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    boxes: List[BoundingBox] = []
+    h, w = gray.shape
+    for contour in contours:
+        x, y, cw, ch = cv2.boundingRect(contour)
+        area = cw * ch
+        if area < 100:
+            continue
+        aspect = cw / float(ch)
+        # Slightly wider range for Sobel due to stronger edge emphasis
+        if aspect < 0.1 or aspect > 20:
+            continue
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(w, x + cw), min(h, y + ch)
+        boxes.append((x0, y0, x1 - x0, y1 - y0))
+
+    return _non_max_suppression(boxes)
+
+
+def detect_text_gradient(img: np.ndarray) -> List[BoundingBox]:
+    """Detect text regions using a morphological gradient and dilation.
+
+    The morphological gradient is the difference between the dilation and
+    erosion of an image.  It highlights transitions (edges) around
+    objects.  This detector computes the gradient of the grayscale
+    image, thresholds it, and dilates horizontally to connect adjacent
+    strokes.  The resulting contours are filtered by size and aspect
+    ratio and returned as bounding boxes.
+
+    Parameters
+    ----------
+    img:
+        Input image in BGR or grayscale format.
+
+    Returns
+    -------
+    List[BoundingBox]
+        A list of bounding boxes enclosing detected text regions.
+    """
+    gray = _prepare_image(img)
+
+    # Compute morphological gradient to emphasise edges
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    gradient = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kernel)
+
+    # Normalize and threshold the gradient image using Otsu
+    grad8 = cv2.convertScaleAbs(gradient)
+    _, binary = cv2.threshold(
+        grad8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+    )
+
+    # Dilate horizontally to merge characters
+    horiz_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+    dilated = cv2.dilate(binary, horiz_kernel, iterations=1)
+
+    contours, _ = cv2.findContours(
+        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    boxes: List[BoundingBox] = []
+    h, w = gray.shape
+    for contour in contours:
+        x, y, cw, ch = cv2.boundingRect(contour)
+        area = cw * ch
+        if area < 100:
+            continue
+        aspect = cw / float(ch)
+        if aspect < 0.1 or aspect > 20:
+            continue
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(w, x + cw), min(h, y + ch)
+        boxes.append((x0, y0, x1 - x0, y1 - y0))
+
+    return _non_max_suppression(boxes)
+
+
+def draw_bounding_boxes(
+    img: np.ndarray, boxes: List[BoundingBox], color=(0, 255, 0), thickness: int = 2
+) -> np.ndarray:
     """Return a copy of the image with bounding boxes drawn.
 
     Parameters

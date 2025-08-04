@@ -2,7 +2,7 @@
 """Command-line tool for text detection.
 
 This script exposes the simple text detection algorithms defined in
-``src/text.py`` via a convenient command-line interface.  Given an
+``src/text_detection.py`` via a convenient command-line interface.  Given an
 image (or a glob of images), it will detect text regions using the
 selected method and optionally save annotated outputs.  Users can run
 the script in interactive mode to display results on screen before
@@ -11,17 +11,16 @@ saving.
 Usage examples::
 
     # Detect text in a single image using morphological operations
-    python scripts/test_text.py data/raw_maps/map1.jpg --method morph --interactive
+    python scripts/test_text_detection.py data/raw_maps/map1.jpg --method morph --interactive
 
     # Batch process all JPG files and save results in data/text_out
-    python scripts/test_text.py "data/raw_maps/*.jpg" --method mser -o data/text_out
+    python scripts/test_text_detection.py "data/raw_maps/*.jpg" --method mser -o data/text_out
 
-The available detection methods are ``morph``, ``mser`` and ``canny``.
+The available detection methods are ``morph``, ``mser``, ``canny``, ``sobel`` and ``gradient``.
 
 If you install additional OCR libraries (e.g. EasyOCR or MMOCR), you
-can extend ``src/text.py`` with new detectors and expose them here by
+can extend ``src/text_detection.py`` with new detectors and expose them here by
 adding to the ``METHODS`` dictionary below.
-
 """
 from __future__ import annotations
 
@@ -45,6 +44,8 @@ from src.text_detection import (
     detect_text_morphology,
     detect_text_mser,
     detect_text_canny,
+    detect_text_sobel,
+    detect_text_gradient,
     draw_bounding_boxes,
 )
 
@@ -54,6 +55,8 @@ METHODS: Dict[str, Callable[[cv2.Mat], List[tuple[int, int, int, int]]]] = {
     "morph": detect_text_morphology,
     "mser": detect_text_mser,
     "canny": detect_text_canny,
+    "sobel": detect_text_sobel,
+    "gradient": detect_text_gradient,
 }
 
 
@@ -88,7 +91,7 @@ def parse_arguments() -> argparse.Namespace:
         default="data/processed_maps",
         help=(
             "Base output directory. Results will be written under "
-            "<output-dir>/<input_filename_without_ext>/"
+            "<output-dir>/<image-stem>/<image-stem>_<method>.jpg"
         ),
     )
     parser.add_argument(
@@ -130,6 +133,7 @@ def main() -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / f"{img_path.stem}_{method}.jpg"
         cv2.imwrite(str(out_path), annotated)
+
 
 if __name__ == "__main__":
     main()
