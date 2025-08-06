@@ -1,252 +1,170 @@
+# src/text_detection.py
+
+#!/usr/bin/env python3
 """
 Text detection utilities for the Arabic Maps project.
 
-This module implements several simple text‑detection algorithms based
-on OpenCV primitives.  The goal is to provide working fallback
-detectors in pure Python without any heavy third‑party dependencies.
-If more sophisticated detectors (e.g. MMOCR, EasyOCR, PaddleOCR) are
-available in your environment, you can extend this module by adding
-additional methods here.  Each detector function accepts a BGR or
-grayscale image as a NumPy array and returns a list of bounding boxes
-in ``(x, y, w, h)`` format.
-
-The following detectors are currently provided:
-
-``detect_text_morphology``
-    Uses adaptive thresholding and morphological operations to connect
-    characters into candidate text blobs.  Suitable for high‑contrast
-    images where text is darker than the background.
-
-``detect_text_mser``
-    Wraps OpenCV's MSER (Maximally Stable Extremal Regions) detector.
-    This method is more robust to varying illumination but may produce
-    many small regions; post‑processing filters small or extremely
-    elongated boxes.
-
-``detect_text_canny``
-    Applies Canny edge detection followed by dilation to highlight
-    clusters of edges that form text.  Works best when characters have
-    distinct edges but may merge neighbouring words into a single box.
-
-``detect_text_sobel``
-    Computes Sobel gradients in the x and y directions to emphasise
-    edges, thresholds the gradient magnitude and dilates to connect
-    strokes.  This simple technique performs well on documents where
-    characters exhibit strong edge responses.
-
-``detect_text_gradient``
-    Uses a morphological gradient (dilation minus erosion) to highlight
-    transitions in the image, thresholds the result and dilates to
-    connect nearby strokes.  This approach can be effective on
-    scanned documents and maps with moderate noise.
-
-``draw_bounding_boxes``
-    Given an image and a list of bounding boxes, returns a copy of
-    the image with rectangles drawn around each detected region.
-
-Example usage::
-
-    from pathlib import Path
-    from src.text_detection import detect_text_morphology, draw_bounding_boxes
-    import cv2
-
-    img = cv2.imread("/path/to/map.jpg")
-    boxes = detect_text_morphology(img)
-    annotated = draw_bounding_boxes(img, boxes)
-    cv2.imwrite("output.jpg", annotated)
+Each detector now takes an `nms_filter: bool = False` argument.
+If True, non-max suppression is run; otherwise raw boxes are returned.
 """
 
 from __future__ import annotations
-
 from typing import List, Tuple
 
 import cv2
 import numpy as np
+from skimage.measure import regionprops
+from skimage.morphology import skeletonize
+from scipy.ndimage import distance_transform_edt
 
-
-# A bounding box is represented as (x, y, width, height)
 BoundingBox = Tuple[int, int, int, int]
 
 
 def _prepare_image(img: np.ndarray) -> np.ndarray:
-    """Ensure the input image is grayscale.
-
-    If ``img`` has 3 channels (BGR), it is converted to grayscale.
-    A median blur is applied to reduce noise before thresholding.
-
-    Parameters
-    ----------
-    img:
-        Input image as a NumPy array in BGR or grayscale format.
-
-    Returns
-    -------
-    np.ndarray
-        A single‑channel grayscale image.
-    """
     if img.ndim == 3 and img.shape[2] == 3:
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     else:
         gray = img.copy()
-    # Median filter to suppress pepper noise without blurring edges too much
     return cv2.medianBlur(gray, 3)
 
 
-def detect_text_morphology(img: np.ndarray) -> List[BoundingBox]:
-    """Detect candidate text regions using morphological operations.
-
-    This method converts the image to grayscale, applies adaptive
-    thresholding to binarise it, and then dilates the binary mask with
-    a horizontal structuring element to bridge small gaps between
-    characters.  Contours of the dilated mask are extracted and
-    returned as bounding boxes.  Very small regions and boxes with
-    extreme aspect ratios are filtered out.
-
-    Parameters
-    ----------
-    img:
-        Input image in BGR or grayscale format.
-
-    Returns
-    -------
-    List[BoundingBox]
-        A list of detected bounding boxes (x, y, width, height).
-    """
+def detect_text_morphology(
+    img: np.ndarray,
+    *,
+    nms_filter: bool = False,
+) -> List[BoundingBox]:
     gray = _prepare_image(img)
-
-    # Adaptive thresholding produces a binary image where text appears
-    # white (1) on a black (0) background.  The blockSize and C
-    # parameters may need tuning for different resolutions.
     binary = cv2.adaptiveThreshold(
-        gray,
-        maxValue=255,
+        gray, 255,
         adaptiveMethod=cv2.ADAPTIVE_THRESH_MEAN_C,
         thresholdType=cv2.THRESH_BINARY_INV,
-        blockSize=31,
-        C=15,
+        blockSize=31, C=15,
     )
-
-    # Dilation with a horizontal kernel helps merge adjacent characters
-    # into single connected components.  Adjust the kernel width based
-    # on image size; here a 15×3 rectangle is used as a heuristic.
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
     dilated = cv2.dilate(binary, kernel, iterations=1)
-
-    # Find contours of dilated regions.  OpenCV returns a hierarchy
-    # along with the list of contours; we ignore the hierarchy.
     contours, _ = cv2.findContours(
         dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
     )
 
     boxes: List[BoundingBox] = []
     h, w = gray.shape
-    for contour in contours:
-        x, y, cw, ch = cv2.boundingRect(contour)
-        # Filter out very small regions
-        area = cw * ch
-        if area < 100:  # skip tiny blobs
+    for cnt in contours:
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        if cw * ch < 100:
             continue
-        # Filter out extremely tall or wide boxes (likely non‑text)
         aspect = cw / float(ch)
         if aspect < 0.2 or aspect > 15:
             continue
-        # Ensure the box lies within image bounds
-        x0 = max(0, x)
-        y0 = max(0, y)
-        x1 = min(w, x + cw)
-        y1 = min(h, y + ch)
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(w, x + cw), min(h, y + ch)
         boxes.append((x0, y0, x1 - x0, y1 - y0))
 
-    # Remove overlapping boxes using NMS to reduce duplicates
-    return _non_max_suppression(boxes)
+    return _non_max_suppression(boxes) if nms_filter else boxes
 
 
-def detect_text_mser(img: np.ndarray) -> List[BoundingBox]:
-    """Detect text regions using Maximally Stable Extremal Regions (MSER).
-
-    MSER is a blob detector that is often used for text detection in
-    natural images.  Detected regions are converted to bounding boxes.
-    Small regions and boxes with extreme aspect ratios are filtered out
-    to reduce false positives.
-
-    Parameters
-    ----------
-    img:
-        Input image in BGR or grayscale format.
-
-    Returns
-    -------
-    List[BoundingBox]
-        A list of bounding boxes enclosing MSER regions.
-    """
+def detect_text_mser(
+    img: np.ndarray,
+    *,
+    # MSER parameters
+    delta: int = 5,
+    min_area: int = 60,
+    max_area: int = 14400,
+    max_variation: float = 0.3,
+    min_diversity: float = 0.2,
+    max_evolution: int = 1000,
+    area_threshold: float = 1.01,
+    min_margin: float = 0.003,
+    edge_blur_size: int = 3,
+    
+    # Post-run filters
+    geom_filter: bool = False,
+    sw_filter: bool = False,
+    sw_threshold: float = 0.4,
+    geom_thresholds: dict | None = None,
+    nms_filter: bool = False,
+) -> List[BoundingBox]:
     gray = _prepare_image(img)
 
-    # Initialise MSER detector.  Parameters such as delta, minArea and
-    # maxArea control the stability and size of detected regions.  These
-    # values may require tuning depending on the resolution of your
-    # images.  See OpenCV documentation for details.
-    # Create an MSER detector with default parameters.  Some OpenCV
-    # versions do not accept keyword arguments for MSER_create.  If you
-    # wish to adjust settings such as delta or min/max area, use the
-    # corresponding setter methods on the returned detector.  The
-    # defaults are chosen to work reasonably well for high‑resolution
-    # scanned images.
-    mser = cv2.MSER_create()
-
+    mser = cv2.MSER_create(
+        delta,
+        min_area,
+        max_area,
+        max_variation,
+        min_diversity,
+        max_evolution,
+        area_threshold,
+        min_margin,
+        edge_blur_size,
+    )
     regions, _ = mser.detectRegions(gray)
+
+    geom_thresholds = geom_thresholds or {
+        "aspect_max": 3.0,
+        "eccentricity_max": 0.995,
+        "solidity_min": 0.3,
+        "extent_range": (0.2, 0.9),
+        "euler_min": -4,
+    }
+
     boxes: List[BoundingBox] = []
     h, w = gray.shape
+
     for pts in regions:
         x, y, cw, ch = cv2.boundingRect(pts.reshape(-1, 1, 2))
-        area = cw * ch
-        if area < 100:
+        if cw * ch < min_area:
             continue
-        aspect = cw / float(ch)
-        if aspect < 0.2 or aspect > 15:
-            continue
+
+        mask = np.zeros((h, w), dtype=np.uint8)
+        mask[pts[:, 1], pts[:, 0]] = 1
+
+        if geom_filter:
+            props = regionprops(mask)[0]
+            aspect = cw / float(ch)
+            if aspect > geom_thresholds["aspect_max"]:
+                continue
+            if props.eccentricity > geom_thresholds["eccentricity_max"]:
+                continue
+            if props.solidity < geom_thresholds["solidity_min"]:
+                continue
+            if not (geom_thresholds["extent_range"][0] <= props.extent <= geom_thresholds["extent_range"][1]):
+                continue
+            if props.euler_number < geom_thresholds["euler_min"]:
+                continue
+
+        if sw_filter:
+            padded = np.pad(mask, 1, mode="constant", constant_values=0)
+            dist = distance_transform_edt(padded)
+            skel = skeletonize(padded > 0)
+            sw_vals = dist[skel]
+            if sw_vals.size == 0:
+                continue
+            sw_metric = sw_vals.std() / float(sw_vals.mean())
+            if sw_metric > sw_threshold:
+                continue
+
         x0, y0 = max(0, x), max(0, y)
         x1, y1 = min(w, x + cw), min(h, y + ch)
         boxes.append((x0, y0, x1 - x0, y1 - y0))
 
-    return _non_max_suppression(boxes)
+    return _non_max_suppression(boxes) if nms_filter else boxes
 
 
-def detect_text_canny(img: np.ndarray) -> List[BoundingBox]:
-    """Detect text regions using Canny edges and dilation.
-
-    This heuristic method uses Canny edge detection to find edges in
-    the image.  Edges are dilated to connect neighbouring strokes,
-    forming blobs corresponding to text lines.  Contours of these
-    blobs are extracted and filtered by size and aspect ratio.
-
-    Parameters
-    ----------
-    img:
-        Input image in BGR or grayscale format.
-
-    Returns
-    -------
-    List[BoundingBox]
-        A list of bounding boxes enclosing detected text regions.
-    """
+def detect_text_canny(
+    img: np.ndarray,
+    *,
+    nms_filter: bool = False,
+) -> List[BoundingBox]:
     gray = _prepare_image(img)
-    edges = cv2.Canny(gray, threshold1=50, threshold2=150, apertureSize=3)
-
-    # Dilate edges to link characters.  A rectangular kernel merges
-    # neighbouring strokes; adjust kernel dimensions as needed.
+    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
     dilated = cv2.dilate(edges, kernel, iterations=1)
-
-    contours, _ = cv2.findContours(
-        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     boxes: List[BoundingBox] = []
     h, w = gray.shape
-    for contour in contours:
-        x, y, cw, ch = cv2.boundingRect(contour)
-        area = cw * ch
-        if area < 100:
+    for cnt in contours:
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        if cw * ch < 100:
             continue
         aspect = cw / float(ch)
         if aspect < 0.1 or aspect > 20:
@@ -255,116 +173,59 @@ def detect_text_canny(img: np.ndarray) -> List[BoundingBox]:
         x1, y1 = min(w, x + cw), min(h, y + ch)
         boxes.append((x0, y0, x1 - x0, y1 - y0))
 
-    return _non_max_suppression(boxes)
+    return _non_max_suppression(boxes) if nms_filter else boxes
 
 
-def detect_text_sobel(img: np.ndarray) -> List[BoundingBox]:
-    """Detect text regions using Sobel gradient magnitude and dilation.
-
-    This detector computes the horizontal and vertical Sobel gradients to
-    emphasise edge information in the image.  The gradient magnitude is
-    thresholded to produce a binary mask of strong edges.  A horizontal
-    dilation connects neighbouring strokes into blobs corresponding to
-    words or lines.  Detected contours are filtered by size and aspect
-    ratio.  This approach performs well on high‑contrast documents where
-    characters have clear edges.
-
-    Parameters
-    ----------
-    img:
-        Input image in BGR or grayscale format.
-
-    Returns
-    -------
-    List[BoundingBox]
-        A list of bounding boxes enclosing detected text regions.
-    """
+def detect_text_sobel(
+    img: np.ndarray,
+    *,
+    nms_filter: bool = False,
+) -> List[BoundingBox]:
     gray = _prepare_image(img)
-
-    # Compute Sobel gradients in x and y directions
     sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
     sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    magnitude = cv2.magnitude(sobel_x, sobel_y)
-    # Convert magnitude to 8‑bit and normalise
-    mag8 = cv2.convertScaleAbs(magnitude)
-
-    # Threshold the gradient image using Otsu's method
-    _, binary = cv2.threshold(
-        mag8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
-
-    # Dilate with a horizontal kernel to merge adjacent characters
+    mag = cv2.magnitude(sobel_x, sobel_y)
+    mag8 = cv2.convertScaleAbs(mag)
+    _, binary = cv2.threshold(mag8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
     dilated = cv2.dilate(binary, kernel, iterations=1)
-
-    contours, _ = cv2.findContours(
-        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     boxes: List[BoundingBox] = []
     h, w = gray.shape
-    for contour in contours:
-        x, y, cw, ch = cv2.boundingRect(contour)
-        area = cw * ch
-        if area < 100:
+    for cnt in contours:
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        if cw * ch < 100:
             continue
         aspect = cw / float(ch)
-        # Slightly wider range for Sobel due to stronger edge emphasis
         if aspect < 0.1 or aspect > 20:
             continue
         x0, y0 = max(0, x), max(0, y)
         x1, y1 = min(w, x + cw), min(h, y + ch)
         boxes.append((x0, y0, x1 - x0, y1 - y0))
 
-    return _non_max_suppression(boxes)
+    return _non_max_suppression(boxes) if nms_filter else boxes
 
 
-def detect_text_gradient(img: np.ndarray) -> List[BoundingBox]:
-    """Detect text regions using a morphological gradient and dilation.
-
-    The morphological gradient is the difference between the dilation and
-    erosion of an image.  It highlights transitions (edges) around
-    objects.  This detector computes the gradient of the grayscale
-    image, thresholds it, and dilates horizontally to connect adjacent
-    strokes.  The resulting contours are filtered by size and aspect
-    ratio and returned as bounding boxes.
-
-    Parameters
-    ----------
-    img:
-        Input image in BGR or grayscale format.
-
-    Returns
-    -------
-    List[BoundingBox]
-        A list of bounding boxes enclosing detected text regions.
-    """
+def detect_text_gradient(
+    img: np.ndarray,
+    *,
+    nms_filter: bool = False,
+) -> List[BoundingBox]:
     gray = _prepare_image(img)
-
-    # Compute morphological gradient to emphasise edges
     kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    gradient = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kernel)
-
-    # Normalize and threshold the gradient image using Otsu
-    grad8 = cv2.convertScaleAbs(gradient)
-    _, binary = cv2.threshold(
-        grad8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-    )
-
-    # Dilate horizontally to merge characters
-    horiz_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
-    dilated = cv2.dilate(binary, horiz_kernel, iterations=1)
-
-    contours, _ = cv2.findContours(
-        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
+    grad = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kernel)
+    grad8 = cv2.convertScaleAbs(grad)
+    _, binary = cv2.threshold(grad8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    horiz = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
+    dilated = cv2.dilate(binary, horiz, iterations=1)
+    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     boxes: List[BoundingBox] = []
     h, w = gray.shape
-    for contour in contours:
-        x, y, cw, ch = cv2.boundingRect(contour)
-        area = cw * ch
-        if area < 100:
+    for cnt in contours:
+        x, y, cw, ch = cv2.boundingRect(cnt)
+        if cw * ch < 100:
             continue
         aspect = cw / float(ch)
         if aspect < 0.1 or aspect > 20:
@@ -373,74 +234,32 @@ def detect_text_gradient(img: np.ndarray) -> List[BoundingBox]:
         x1, y1 = min(w, x + cw), min(h, y + ch)
         boxes.append((x0, y0, x1 - x0, y1 - y0))
 
-    return _non_max_suppression(boxes)
+    return _non_max_suppression(boxes) if nms_filter else boxes
 
 
 def draw_bounding_boxes(
-    img: np.ndarray, boxes: List[BoundingBox], color=(0, 255, 0), thickness: int = 2
+    img: np.ndarray,
+    boxes: List[BoundingBox],
+    color: tuple[int, int, int] = (0, 255, 0),
+    thickness: int = 2,
 ) -> np.ndarray:
-    """Return a copy of the image with bounding boxes drawn.
-
-    Parameters
-    ----------
-    img:
-        Input image (BGR) on which to draw.
-
-    boxes:
-        List of bounding boxes to draw, each as (x, y, w, h).
-
-    color:
-        Tuple specifying the colour of the rectangle in BGR format.
-
-    thickness:
-        Thickness of the rectangle outline.
-
-    Returns
-    -------
-    np.ndarray
-        Image copy with rectangles drawn.
-    """
     out = img.copy()
-    for (x, y, w, h) in boxes:
-        cv2.rectangle(out, (int(x), int(y)), (int(x + w), int(y + h)), color, thickness)
+    for x, y, w, h in boxes:
+        cv2.rectangle(out, (x, y), (x + w, y + h), color, thickness)
     return out
 
 
-def _non_max_suppression(boxes: List[BoundingBox], iou_threshold: float = 0.3) -> List[BoundingBox]:
-    """Suppress overlapping bounding boxes using non‑maximum suppression (NMS).
-
-    The NMS algorithm iteratively selects the box with the largest area
-    and removes any remaining boxes whose Intersection over Union (IoU)
-    with the selected box exceeds ``iou_threshold``.  This reduces
-    duplicate detections that arise from methods like MSER.
-
-    Parameters
-    ----------
-    boxes:
-        List of bounding boxes as (x, y, w, h).
-
-    iou_threshold:
-        IoU threshold above which boxes are considered duplicates and
-        suppressed.  Lower values are more aggressive.
-
-    Returns
-    -------
-    List[BoundingBox]
-        Filtered list of boxes after suppression.
-    """
+def _non_max_suppression(
+    boxes: List[BoundingBox],
+    iou_threshold: float = 0.3
+) -> List[BoundingBox]:
     if not boxes:
         return []
-
-    # Convert to numpy arrays for vectorised operations
-    boxes_np = np.array([
-        [x, y, x + w, y + h] for (x, y, w, h) in boxes
-    ], dtype=float)
-    x1, y1, x2, y2 = boxes_np[:, 0], boxes_np[:, 1], boxes_np[:, 2], boxes_np[:, 3]
+    arr = np.array([[x, y, x + w, y + h] for x, y, w, h in boxes], dtype=float)
+    x1, y1, x2, y2 = arr[:,0], arr[:,1], arr[:,2], arr[:,3]
     areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-    # Sort boxes by area (largest first)
     order = areas.argsort()[::-1]
     keep: List[int] = []
-
     while order.size > 0:
         i = order[0]
         keep.append(i)
@@ -448,17 +267,13 @@ def _non_max_suppression(boxes: List[BoundingBox], iou_threshold: float = 0.3) -
         yy1 = np.maximum(y1[i], y1[order[1:]])
         xx2 = np.minimum(x2[i], x2[order[1:]])
         yy2 = np.minimum(y2[i], y2[order[1:]])
-
         w = np.maximum(0.0, xx2 - xx1 + 1)
         h = np.maximum(0.0, yy2 - yy1 + 1)
         inter = w * h
         union = areas[i] + areas[order[1:]] - inter
-        # Compute IoU and find indices where IoU is below threshold
-        ious = inter / union
-        inds = np.where(ious <= iou_threshold)[0]
+        iou = inter / union
+        inds = np.where(iou <= iou_threshold)[0]
         order = order[inds + 1]
-
-    # Reconstruct list of boxes to return
     return [
         (int(x1[idx]), int(y1[idx]), int(x2[idx] - x1[idx]), int(y2[idx] - y1[idx]))
         for idx in keep

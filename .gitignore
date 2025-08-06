@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 
 # Jupyter Notebook checkpoints
+.python-version
 .ipynb_checkpoints/
 
 # Environments
@@ -11,9 +12,9 @@ env/
 venv/
 *.egg-info/
 
-# Data folders
-data/raw/
-data/processed/
+# Data and Archive folders
+data/
+archive/
 
 # VSCode, PyCharm, macOS
 .vscode/
@@ -22,6 +23,7 @@ data/processed/
 
 # Google service account key
 creds.json
+
 # dotenv file
 .env
-
+.venv
