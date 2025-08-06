@@ -6,6 +6,9 @@ import itertools
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 
+import shutil
+import tempfile
+
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
@@ -86,7 +89,7 @@ def refine_circle_in_roi(
     roi = gray_img[y0:y1, x0:x1]
     min_r = max(0, int(r*(1-delta)))
     max_r = int(r*(1+delta))
-    raw = detect_circle_hough(roi, param1, param2, min_r, max_r, top_k=5) or []
+    raw = detect_circle_hough(roi, param1, param2, min_r, max_r, top_k=100) or []
     return [(cx_off+x0, cy_off+y0, rad) for (cx_off,cy_off,rad) in raw]
 
 
@@ -140,91 +143,88 @@ def draw_multiple_circles(
 # -----------------------------------------------------------------------------
 # Interactive pipeline
 # -----------------------------------------------------------------------------
+# src/circle.py  (just replace your existing interactive_detect_and_save)
+
 def interactive_detect_and_save(
     input_path: Path,
     base_output_dir: Path,
     n_clicks: int = 8,
+    preview_size: int = 150,   # pixel width of each preview image
+    save_fig: bool = False
 ):
-    """
-    Loop:
-      1) Let user click n points → show fitted circle
-      2) Generate ROI candidates
-      3) Review candidates one‐by‐one with prompt "Accept candidate {idx}? (y/n/r): "
-         - 'y' → accept and break
-         - 'n' → show next
-         - 'r' → restart at step 1
-      4) Save chosen circle + params.json
-    """
     out_dir = make_output_dir(input_path, base_output_dir)
-    img = cv2.imread(str(input_path))
-    gray = median_blur_and_gray(img)
-    h, w = gray.shape
+    img     = cv2.imread(str(input_path))
+    gray    = median_blur_and_gray(img)
+    h, w    = gray.shape
 
     while True:
-        # Step 1: click & show fit
-        disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        # --- Step 1: Click perimeter points ---
         fig, ax = plt.subplots(figsize=(8,8))
-        ax.imshow(disp)
-        ax.set_title(f"Click {n_clicks} edge points around the circle's perimeter.\n(close to continue))")
+        ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        ax.set_title(f"Click {n_clicks} points around the circle perimeter.\n(close to continue)")
         plt.axis("off")
         pts = plt.ginput(n_clicks, timeout=-1)
+        # plt.close(fig)
 
         xs = np.array([x for x,_ in pts])
         ys = np.array([y for _,y in pts])
         cx0, cy0, r0 = fit_circle(xs, ys)
+        cx0, cy0, r0 = fit_circle(xs, ys)
 
         circ = plt.Circle((cx0, cy0), r0,
-                          edgecolor="red", facecolor="none", linewidth=2)
+                        edgecolor="red", facecolor="none", linewidth=2)
         ax.add_patch(circ)
         plt.draw()
         plt.show(block=True)
         plt.close(fig)
 
-        # Step 2: refine
+        # --- Step 2: Refine candidates in ROI ---
         candidates = refine_circle_in_roi(gray, cx0, cy0, r0)
         if not candidates:
             raise RuntimeError("No ROI candidates found")
 
-        # Step 3: review
-        chosen = None
+        # --- Step 3: Batch preview to temp dir ---
+        temp_dir = Path(tempfile.mkdtemp(prefix="circle_preview_"))
         for idx, (cx, cy, r) in enumerate(candidates, start=1):
-            frame = draw_circle(img, cx, cy, r, color=(0,255,0))
-            show_image(frame, title=f"Candidate {idx}/{len(candidates)}")
-            ans = input(f"Accept candidate {idx}? (y/n/r): ").strip().lower()
-            if ans == 'r':
-                # restart from step 1
-                break
-            if ans == 'y':
-                chosen = (cx, cy, r)
-                break
-            # if 'n', continue to next
+            preview = draw_circle(img, cx, cy, r, color=(0,255,0))
+            # resize for faster viewing
+            # preview = cv2.resize(preview, (preview_size, preview_size))
+            cv2.imwrite(str(temp_dir/f"{idx}.jpg"), preview)
 
-        # if user pressed 'r', go back to clicking
-        if ans == 'r':
+        print(f"\nPreview images (1–{len(candidates)}) written to: {temp_dir}")
+        choice = input(f"Enter index [1–{len(candidates)}] to accept, or 'r' to restart: ").strip().lower()
+
+        # Clean up temp previews
+        shutil.rmtree(temp_dir)
+
+        if choice == 'r':
+            # go back to clicking
             continue
 
-        # if none accepted, default to first
-        if chosen is None:
-            print("None accepted; defaulting to first candidate.")
-            chosen = candidates[0]
+        try:
+            sel = int(choice)
+            if 1 <= sel <= len(candidates):
+                cx, cy, r = candidates[sel-1]
+            else:
+                print("Index out of range; restarting.")
+                continue
+        except ValueError:
+            print("Unrecognized input; restarting.")
+            continue
 
-        cx, cy, r = chosen
-        break  # exit while True
-
-    # Step 4: save final
-    final = draw_circle(img, cx, cy, r)
-    cv2.imwrite(str(out_dir/"circle_final.jpg"), final)
-    update_json(
-        out_dir/"params.json",
-        {
-            "center_x":   cx,
-            "center_y":   cy,
-            "radius":     r,
-            "image_width":  w,
-            "image_height": h,
-        }
-    )
-    print(f"Saved circle_final.jpg & updated params.json in {out_dir}")
+        # --- Step 4: Save final & params.json ---
+        if save_fig:
+            final = draw_circle(img, cx, cy, r)
+            cv2.imwrite(str(out_dir/"circle_final.jpg"), final)
+            print(f"Saved circle_final.jpg in {out_dir}")
+        
+        
+        update_json(
+            out_dir/"params.json",
+            {"center_x":cx, "center_y":cy, "radius":r}
+        )
+        print(f"Saved params.json in {out_dir}")
+        break
 
 
 

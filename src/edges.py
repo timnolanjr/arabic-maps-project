@@ -126,6 +126,7 @@ def interactive_detect_and_save(
     top_k: int = 10,
     min_angle_deg: float = 80.0,
     max_angle_deg: float = 110.0,
+    save_fig: bool = False
 ):
     out_dir = make_output_dir(input_path, base_output_dir)
     img  = cv2.imread(str(input_path))
@@ -136,10 +137,10 @@ def interactive_detect_and_save(
     disp = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     fig, ax = plt.subplots(figsize=(8, 6))
     ax.imshow(disp, origin="upper")
-    ax.set_title(f"Click {n_clicks} points along the top edge")
+    ax.set_title(f"Click {n_clicks} points along the top edge\n(close to continue)")
     ax.axis("off")
     pts = plt.ginput(n_clicks, timeout=-1)
-    plt.close(fig)
+    # plt.close(fig)
 
     xs = np.array([x for x, _ in pts])
     ys = np.array([y for _, y in pts])
@@ -147,6 +148,17 @@ def interactive_detect_and_save(
     rho0, theta0 = fit_edge_line(xs, ys)
     p1, p2 = line_to_endpoints_full(rho0, theta0, img.shape[:2])
 
+    # ax.plot(
+    #     [p1[0], p2[0]],
+    #     [p1[1], p2[1]],
+    #     color="red",
+    #     linewidth=8,
+    # )
+
+    # render & block until closed
+    plt.draw()
+    plt.show(block=True)
+    plt.close(fig)
     # Step 3: build ROI band ±delta*H around clicked ys
     y0 = max(0, int(min(ys) - delta * H))
     y1 = min(H, int(max(ys) + delta * H))
@@ -162,14 +174,18 @@ def interactive_detect_and_save(
     rho_m, theta_m = average_rho_theta(horiz)
 
     # Step 6: show & save final result
-    final = draw_line(img, rho_m, theta_m, thickness=3)
-    show_image(
-        final,
-        title=f"Final edge — ρ={rho_m:.2f}, θ={math.degrees(theta_m):.2f}°"
-    )
-    cv2.imwrite(str(out_dir/"edge_final.jpg"), final)
+    if save_fig:
+        final = draw_line(img, rho_m, theta_m, thickness=3)
+        show_image(
+            final,
+            title=f"Final edge — ρ={rho_m:.2f}, θ={math.degrees(theta_m):.2f}°"
+        )
+        print(f"Saved edge_final.jpg {out_dir}")
+        cv2.imwrite(str(out_dir/"edge_final.jpg"), final)
+
+    
     update_json(out_dir/"params.json", {"rho": rho_m, "theta": theta_m})
-    print(f"Saved edge_final.jpg & updated params.json in {out_dir}")
+    print(f"Saved updated params.json in {out_dir}")
 
 
 # -----------------------------------------------------------------------------
