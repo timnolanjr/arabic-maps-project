@@ -119,7 +119,7 @@ def interactive_detect_and_save(
     input_path: Path,
     base_output_dir: Path,
     n_clicks: int = 3,
-    delta: float = 0.1,
+    delta: float = 0.03,
     canny_low: int = 50,
     canny_high: int = 150,
     hough_thresh: int = 100,
