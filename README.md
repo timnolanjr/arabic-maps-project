@@ -57,7 +57,9 @@ We run the preprocessing pipeline on al-Qazwīnī’s work with the following co
 python pipeline.py "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg"
 ```
 
+<!---
 ![Parameter Overlay Map Example](assets/images/params_overlay.jpg)
+-->
 
 *`params_overlay.jpg` depicting geometric parameters (circle, center, top-edge, tangent South / جنوب / الجَنوب, cardinal directions*
 
