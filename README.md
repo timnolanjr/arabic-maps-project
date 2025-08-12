@@ -122,7 +122,7 @@ You will get per-image folders under `data/processed_maps/<image_stem>/` with a 
 
 ## CLI usage
 
---- Pipeline (batch over a directory) ---
+### Full Pipeline
 
 Runs metadata → circle → edge → tangent; writes per-image outputs under data/processed_maps/<stem>/
 ```
@@ -140,7 +140,8 @@ python -m src.cli pipeline "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o da
 ```
 
 
---- Circle Detection only ---
+### Circle Detection
+
 Non-interactive (Hough-based) circle detection; updates `params.json`
 ```
 python -m src.cli circle "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
@@ -151,7 +152,8 @@ Interactive circle detection: click N points on the perimeter, then choose a ref
 python -m src.cli circle "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
 ```
 
---- Edge Detection only ---
+### Top Edge Detection
+
 Non-interactive (Canny+Hough) top-edge detection; updates `params.json`
 ```
 python -m src.cli edges  "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
@@ -162,13 +164,15 @@ Interactive edge detection: click ~3 points along the manuscript’s upper edge,
 python -m src.cli edges  "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
 ```
 
---- Text Detection ---
+### Text Detection
+
 Method choices: `morph | mser | canny | sobel | gradient`
 ```
 python -m src.cli text   "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --method mser
 ```
 
---- Compose overlay from image + params.json ---
+### Image Overlay Only
+
 Writes a final overlay (with legend + metadata) to the given path.
 ```
 python -m src.cli overlay "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" \
