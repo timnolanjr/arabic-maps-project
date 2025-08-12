@@ -232,7 +232,6 @@ For each input image `data/raw_maps/NAME.EXT`, the pipeline writes to `data/proc
   "tangent_x": 3356.93862447785,
   "tangent_y": 501.00027787816384
 } 
-```
 - `params_overlay.jpg` – combined overlay with circle, edge, cardinal markers, and annotation.
 
 
