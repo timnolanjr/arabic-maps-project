@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
+from .io import read_image, read_json, write_image, default_overlay_path
 
 # ----------------------------
 # Basic image helpers (yours)
@@ -179,28 +180,11 @@ def render_overlay_from_paths(
     out_path: Optional[Path] = None,
     **kwargs,
 ) -> Path:
-    """
-    Convenience wrapper: load image + params.json, render, and write to disk.
-
-    Args:
-      image_path: path to the input image (JPG/PNG/etc.)
-      params_path: path to params.json
-      out_path: optional path for the output overlay (defaults to params_overlay.[jpg|png])
-      **kwargs: forwarded to render_overlay (e.g., unicode_glyphs=True)
-
-    Returns:
-      Path to the written overlay.
-    """
-    img = cv2.imread(str(image_path))
-    if img is None:
-        raise FileNotFoundError(f"Failed to read image: {image_path}")
-
-    params = json.loads(Path(params_path).read_text(encoding="utf-8"))
+    img = read_image(image_path)
+    params = read_json(params_path)
     out = render_overlay(img, params, **kwargs)
 
     if out_path is None:
-        out_ext = ".jpg" if image_path.suffix.lower() in {".jpg", ".jpeg"} else ".png"
-        out_path = image_path.with_name("params_overlay" + out_ext)
+        out_path = default_overlay_path(image_path)
 
-    cv2.imwrite(str(out_path), out)
-    return out_path
+    return write_image(out_path, out)

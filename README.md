@@ -120,31 +120,6 @@ You will get per-image folders under `data/processed_maps/<image_stem>/` with a 
 
 ---
 
-## Data layout
-
-```
-arabic-maps-project/
-├── data/
-│   ├── raw_maps/            # your input TIFF/JPG/PNG scans
-│   └── processed_maps/      # auto-created outputs (per-image folders)
-├── scripts/                 # helper CLIs
-├── src/                     # library code
-│   ├── circle.py            # circle detection & review
-│   ├── edges.py             # top-edge detection (batch/interactive)
-│   ├── text_detection.py    # text detectors (beta)
-│   └── utils/
-│       ├── image.py         # grayscale & blur helpers + display
-│       ├── io.py            # json I/O & per-image output dirs
-│       ├── interactive.py   # point-click helpers
-│       ├── metadata.py      # params.json init from image
-│       └── tangent.py       # tangent point computation
-├── pipeline.py              # unified multi-image pipeline
-├── requirements.txt
-└── README.md
-```
-
----
-
 ## CLI usage
 
 ### 1) Unified pipeline
@@ -208,6 +183,36 @@ Common flags (see `scripts/test_text_detection.py` for full list):
 
 ---
 
+## Data layout
+
+```
+arabic-maps-project/
+├── data/
+│   ├── raw_maps/             # input TIFF/JPG/PNG scans, oriented south-up
+│   └── processed_maps/<img>/ # outputs
+│       ├── params.json       # metadata and derived geometric coordinates
+│       └── tangent.py        # tangent point computation
+│   
+├── scripts/                  # CLI smoke tests for individual src files
+│   
+├── src/                      # library code
+│   ├── circle.py             # circle detection & review
+│   ├── edges.py              # top-edge detection (batch/interactive)
+│   ├── text_detection.py     # text detectors (beta)
+│   └── utils/                # utilities
+│       ├── image.py          # grayscale & blur helpers, display & save overlays
+│       ├── io.py             # I/O (images, json)
+│       ├── interactive.py    # point-click helpers for faster per-image computation
+│       ├── metadata.py       # params.json init from image
+│       └── tangent.py        # tangent coordinate points computation
+│   
+├── pipeline.py               # unified processing pipeline
+├── requirements.txt
+└── README.md
+```
+
+---
+
 ## Outputs
 
 For each input image `data/raw_maps/NAME.EXT`, the pipeline writes to `data/processed_maps/NAME/`:
@@ -215,20 +220,19 @@ For each input image `data/raw_maps/NAME.EXT`, the pipeline writes to `data/proc
 - `params.json` – single source of truth for derived geometry and metadata (these are from `assets/images/al-Qazwīnī_Arabic_MSS_575.jpg`):
   ```json
   {
-    "filetype": "jpg",
-    "filesize": 6121401,
-    "image_width": 6760,
-    "image_height": 5080,
-    "colorspace": "sRGB",
-    "center_x": 3358,
-    "center_y": 2528,
-    "radius": 2027,
-    "rho": 217.3,
-    "theta": 1.567,
-    "tangent_x": 3349.8,
-    "tangent_y": 501.0
-  }
-  ```
+  "filetype": "jpg",
+  "filesize": 6121401,
+  "image_width": 6760,
+  "image_height": 5080,
+  "colorspace": "sRGB",
+  "center_x": 3358,
+  "center_y": 2528,
+  "radius": 2027,
+  "rho": 59.0,
+  "theta": 1.5702727078651233,
+  "tangent_x": 3356.93862447785,
+  "tangent_y": 501.00027787816384
+}  ```
 - `params_overlay.jpg` – combined overlay with circle, edge, cardinal markers, and annotation.
 
 
