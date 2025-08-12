@@ -122,45 +122,51 @@ You will get per-image folders under `data/processed_maps/<image_stem>/` with a 
 
 ## CLI usage
 
-# --- Pipeline (batch over a directory) ---
-# Runs metadata → circle → edge → tangent; writes per-image outputs under data/processed_maps/<stem>/
+--- Pipeline (batch over a directory) ---
+```Runs metadata → circle → edge → tangent; writes per-image outputs under data/processed_maps/<stem>/
 python -m src.cli pipeline data/raw_maps -o data/processed_maps
+```
 
-# Pipeline over a single file (non-interactive)
+```# Pipeline over a single file (non-interactive)
 python -m src.cli pipeline "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
+```
 
-# Interactive pipeline: click perimeter points (circle) and ~3 points along top edge (edge)
+```# Interactive pipeline: click perimeter points (circle) and ~3 points along top edge (edge)
 python -m src.cli pipeline "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
+```
 
 
-# --- Circle Detection only ---
-# Non-interactive (Hough-based) circle detection; updates params.json and writes circle.json
+--- Circle Detection only ---
+```# Non-interactive (Hough-based) circle detection; updates params.json and writes circle.json
 python -m src.cli circle "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
+```
 
-# Interactive circle detection: click N points on the perimeter, then choose a refined candidate
+```# Interactive circle detection: click N points on the perimeter, then choose a refined candidate
 python -m src.cli circle "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
+```
 
-
-# --- Edge Detection only ---
-# Non-interactive (Canny+Hough) top-edge detection; updates params.json and writes edge.json
+--- Edge Detection only ---
+```# Non-interactive (Canny+Hough) top-edge detection; updates params.json and writes edge.json
 python -m src.cli edges  "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
+```
 
-# Interactive edge detection: click ~3 points along the manuscript’s upper edge, then refine in an ROI band
+```# Interactive edge detection: click ~3 points along the manuscript’s upper edge, then refine in an ROI band
 python -m src.cli edges  "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
+```
 
-
-# --- Text Detection ---
-# Method choices: morph | mser | canny | sobel | gradient
+--- Text Detection ---
+```# Method choices: morph | mser | canny | sobel | gradient
 python -m src.cli text   "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --method mser
+```
 
-# --- Compose overlay from image + params.json ---
-# Writes a final overlay (with legend + metadata) to the given path.
+--- Compose overlay from image + params.json ---
+```# Writes a final overlay (with legend + metadata) to the given path.
 # Flags: --lang en|ar, --no-legend, --no-textboxes
 python -m src.cli overlay "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" \
   -p "data/processed_maps/al-Qazwīnī_Arabic_MSS_575/params.json" \
   -o assets/images/final_overlay.jpg \
   --lang en
-
+```
 ---
 
 ## Data layout
@@ -171,11 +177,7 @@ arabic-maps-project/
 │   ├── raw_maps/                 # input TIFF/JPG/PNG scans, oriented south-up
 │   └── processed_maps/<stem>/    # per-image outputs
 │       ├── params.json           # single source of truth (metadata + geometry: center, radius, rho, theta, tangent)
-│       ├── params_overlay.jpg    # unified overlay (auto-scaled), legend in UL w/ colored dots + numeric metadata
-│       ├── circle.json           # (convenience) circle params written by circle stage
-│       └── edge.json             # (convenience) edge params written by edge stage
-│       # (optionally present when interactive flags used)
-│       # circle_final.jpg, edge_final.jpg
+│       └── params_overlay.jpg    # unified overlay (auto-scaled), legend in UL w/ colored dots + numeric metadata
 │
 ├── src/
 │   ├── circle.py                 # circle detection (interactive & batch) with consistent return dict

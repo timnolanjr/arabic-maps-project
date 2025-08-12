@@ -200,8 +200,8 @@ def interactive_detect_and_save(
     result = {"rho": float(rho_m), "theta": float(theta_m)}
 
     # Save JSON & optional overlay
-    with open(out_dir / "edge.json", "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2)
+    # with open(out_dir / "edge.json", "w", encoding="utf-8") as f:
+    #     json.dump(result, f, indent=2)
     update_json(out_dir / "params.json", result)
 
     if save_fig:

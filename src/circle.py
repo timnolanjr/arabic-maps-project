@@ -241,8 +241,8 @@ def interactive_detect_and_save(
     result = {"center_x": float(cx), "center_y": float(cy), "radius": float(r)}
 
     # Save JSON & optional overlay
-    with open(out_dir / "circle.json", "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2)
+    # with open(out_dir / "circle.json", "w", encoding="utf-8") as f:
+    #     json.dump(result, f, indent=2)
     update_json(out_dir / "params.json", result)
 
     if save_fig:
