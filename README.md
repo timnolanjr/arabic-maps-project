@@ -122,63 +122,18 @@ You will get per-image folders under `data/processed_maps/<image_stem>/` with a 
 
 ## CLI usage
 
-### 1) Unified pipeline
-Process a directory of images (prompts per file; skips completed work):
 ```bash
-python pipeline.py data/raw_maps -o data/processed_maps
-```
+# Run pipeline over a file or a directory
+python -m src.cli pipeline data/raw_maps -o data/processed_maps
 
-### 2) Circle detection
-Batch candidates (non-interactive), then review interactively:
-```bash
-# Generate candidates
-python scripts/test_circle.py data/raw_maps/map1.jpg
+# Circle-only (interactive)
+python -m src.cli circle data/raw_maps/al-Qazwini_Arabic_MSS_575.jpg -o data/processed_maps --interactive
 
-# Review and pick final circle
-python scripts/pick_circle.py data/raw_maps/map1.jpg -o data/processed_maps
-```
+# Edge-only (interactive)
+python -m src.cli edges  data/raw_maps/al-Qazwini_Arabic_MSS_575.jpg -o data/processed_maps --interactive
 
-Or fully interactive with perimeter clicks + ROI refinement:
-```bash
-python scripts/test_circle.py data/raw_maps/map1.jpg --interactive -o data/processed_maps
-```
-
-### 3) Edge detection
-Batch mode (global Canny+Hough with horizontal-angle filter):
-```bash
-python scripts/test_edges.py data/raw_maps/map1.jpg -o data/processed_maps
-```
-
-Interactive, ROI-guided (click ~3 points along the top edge, then refine):
-```bash
-python scripts/test_edges.py data/raw_maps/map1.jpg --interactive -o data/processed_maps
-```
-
-### 4) Text detection
-Run a detector over a glob of images and save drawn boxes per image:
-```bash
-# Methods: morph | mser | canny | sobel | gradient
-python scripts/test_text_detection.py "data/raw_maps/*.jpg" --method mser -o data/processed_maps
-```
-
-Common flags (see `scripts/test_text_detection.py` for full list):
-- `--interactive` – show a window for each result instead of saving.
-- `--nms-filter` – apply non-max suppression to reduce overlapping boxes.
-
-**MSER-specific flags (subset):**
-```
---mser-delta 5
---mser-min-area 60
---mser-max-area 14400
---mser-max-variation 0.3
---mser-min-diversity 0.2
---mser-max-evolution 1000
---mser-area-threshold 1.01
---mser-min-margin 0.003
---mser-edge-blur-size 3
---mser-geom-filter
---mser-sw-filter
---mser-sw-threshold 0.4
+# Text detection overlay (MSER by default)
+python -m src.cli text   data/raw_maps/al-Qazwini_Arabic_MSS_575.jpg -o data/processed_maps --method mser
 ```
 
 ---
@@ -188,25 +143,27 @@ Common flags (see `scripts/test_text_detection.py` for full list):
 ```
 arabic-maps-project/
 ├── data/
-│   ├── raw_maps/             # input TIFF/JPG/PNG scans, oriented south-up
-│   └── processed_maps/<img>/ # outputs
-│       ├── params.json       # metadata and derived geometric coordinates
-│       └── tangent.py        # tangent point computation
-│   
-├── scripts/                  # CLI smoke tests for individual src files
-│   
-├── src/                      # library code
-│   ├── circle.py             # circle detection & review
-│   ├── edges.py              # top-edge detection (batch/interactive)
-│   ├── text_detection.py     # text detectors (beta)
-│   └── utils/                # utilities
-│       ├── image.py          # grayscale & blur helpers, display & save overlays
-│       ├── io.py             # I/O (images, json)
-│       ├── interactive.py    # point-click helpers for faster per-image computation
-│       ├── metadata.py       # params.json init from image
-│       └── tangent.py        # tangent coordinate points computation
-│   
-├── pipeline.py               # unified processing pipeline
+│   ├── raw_maps/               # input TIFF/JPG/PNG scans, oriented south-up
+│   └── processed_maps/<img>/   # outputs
+│       ├── params.json         # circle, tangent, metadata
+│       └── params_overlay.jpg  # annotated overlay of detected parameters
+│
+├── src/                        # library code
+│   ├── circle.py               # circle detection & review
+│   ├── edges.py                # top-edge detection (batch/interactive)
+│   ├── text_detection.py       # text detectors
+│   ├── cli.py                  # Command Line Interface
+│   ├── pipeline_core.py        # orchestration used by pipeline.py
+│   └── utils/
+│       ├── image.py            # grayscale/blur helpers, display; overlay convenience
+│       ├── io.py               # I/O (images, JSON)
+│       ├── interactive.py      # point-click helpers
+│       ├── metadata.py         # params.json init from image
+│       ├── palette.py          # unified overlay colors
+│       ├── tangent.py          # tangent coordinate computation
+│       └── vis.py              # drawing helpers (circle/edge/tangent/legend/text boxes)
+│
+├── pipeline.py                 # unified processing pipeline
 ├── requirements.txt
 └── README.md
 ```
@@ -232,7 +189,8 @@ For each input image `data/raw_maps/NAME.EXT`, the pipeline writes to `data/proc
   "theta": 1.5702727078651233,
   "tangent_x": 3356.93862447785,
   "tangent_y": 501.00027787816384
-}  ```
+} 
+```
 - `params_overlay.jpg` – combined overlay with circle, edge, cardinal markers, and annotation.
 
 
@@ -271,4 +229,3 @@ For each input image `data/raw_maps/NAME.EXT`, the pipeline writes to `data/proc
 ## License
 
 MIT License.
-
