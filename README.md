@@ -122,19 +122,44 @@ You will get per-image folders under `data/processed_maps/<image_stem>/` with a 
 
 ## CLI usage
 
-```bash
-# Run pipeline over a file or a directory
+# --- Pipeline (batch over a directory) ---
+# Runs metadata → circle → edge → tangent; writes per-image outputs under data/processed_maps/<stem>/
 python -m src.cli pipeline data/raw_maps -o data/processed_maps
 
-# Circle-only (interactive)
-python -m src.cli circle data/raw_maps/al-Qazwini_Arabic_MSS_575.jpg -o data/processed_maps --interactive
+# Pipeline over a single file (non-interactive)
+python -m src.cli pipeline "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
 
-# Edge-only (interactive)
-python -m src.cli edges  data/raw_maps/al-Qazwini_Arabic_MSS_575.jpg -o data/processed_maps --interactive
+# Interactive pipeline: click perimeter points (circle) and ~3 points along top edge (edge)
+python -m src.cli pipeline "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
 
-# Text detection overlay (MSER by default)
-python -m src.cli text   data/raw_maps/al-Qazwini_Arabic_MSS_575.jpg -o data/processed_maps --method mser
-```
+
+# --- Circle Detection only ---
+# Non-interactive (Hough-based) circle detection; updates params.json and writes circle.json
+python -m src.cli circle "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
+
+# Interactive circle detection: click N points on the perimeter, then choose a refined candidate
+python -m src.cli circle "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
+
+
+# --- Edge Detection only ---
+# Non-interactive (Canny+Hough) top-edge detection; updates params.json and writes edge.json
+python -m src.cli edges  "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
+
+# Interactive edge detection: click ~3 points along the manuscript’s upper edge, then refine in an ROI band
+python -m src.cli edges  "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
+
+
+# --- Text Detection ---
+# Method choices: morph | mser | canny | sobel | gradient
+python -m src.cli text   "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --method mser
+
+# --- Compose overlay from image + params.json ---
+# Writes a final overlay (with legend + metadata) to the given path.
+# Flags: --lang en|ar, --no-legend, --no-textboxes
+python -m src.cli overlay "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" \
+  -p "data/processed_maps/al-Qazwīnī_Arabic_MSS_575/params.json" \
+  -o assets/images/final_overlay.jpg \
+  --lang en
 
 ---
 
@@ -143,27 +168,33 @@ python -m src.cli text   data/raw_maps/al-Qazwini_Arabic_MSS_575.jpg -o data/pro
 ```
 arabic-maps-project/
 ├── data/
-│   ├── raw_maps/               # input TIFF/JPG/PNG scans, oriented south-up
-│   └── processed_maps/<img>/   # outputs
-│       ├── params.json         # circle, tangent, metadata
-│       └── params_overlay.jpg  # annotated overlay of detected parameters
+│   ├── raw_maps/                 # input TIFF/JPG/PNG scans, oriented south-up
+│   └── processed_maps/<stem>/    # per-image outputs
+│       ├── params.json           # single source of truth (metadata + geometry: center, radius, rho, theta, tangent)
+│       ├── params_overlay.jpg    # unified overlay (auto-scaled), legend in UL w/ colored dots + numeric metadata
+│       ├── circle.json           # (convenience) circle params written by circle stage
+│       └── edge.json             # (convenience) edge params written by edge stage
+│       # (optionally present when interactive flags used)
+│       # circle_final.jpg, edge_final.jpg
 │
-├── src/                        # library code
-│   ├── circle.py               # circle detection & review
-│   ├── edges.py                # top-edge detection (batch/interactive)
-│   ├── text_detection.py       # text detectors
-│   ├── cli.py                  # Command Line Interface
-│   ├── pipeline_core.py        # orchestration used by pipeline.py
+├── src/
+│   ├── circle.py                 # circle detection (interactive & batch) with consistent return dict
+│   ├── edges.py                  # top-edge detection (interactive & batch) with consistent return dict
+│   ├── text_detection.py         # text detectors (morph, MSER, canny/sobel/gradient variants)
+│   ├── cli.py                    # command-line entry points (pipeline, circle, edges, text, overlay)
+│   ├── pipeline_core.py          # orchestration used by the CLI pipeline
 │   └── utils/
-│       ├── image.py            # grayscale/blur helpers, display; overlay convenience
-│       ├── io.py               # I/O (images, JSON)
-│       ├── interactive.py      # point-click helpers
-│       ├── metadata.py         # params.json init from image
-│       ├── palette.py          # unified overlay colors
-│       ├── tangent.py          # tangent coordinate computation
-│       └── vis.py              # drawing helpers (circle/edge/tangent/legend/text boxes)
+│       ├── extract_pdf.py        # PDF image extractor: export embedded images using PyMuPDF
+│       ├── image.py              # grayscale/blur helpers; legacy overlay shim (deprecated in favor of overlay.py)
+│       ├── io.py                 # I/O helpers (image/JSON)
+│       ├── interactive.py        # point-click helpers
+│       ├── metadata.py           # params.json init from image
+│       ├── overlay.py            # canonical render_overlay_from_paths(img, params.json → overlay)
+│       ├── palette.py            # unified overlay colors
+│       ├── tangent.py            # tangent coordinate computation
+│       └── vis.py                # drawing + composition (auto-scale; UL legend with colored, metadata-only lines)
 │
-├── pipeline.py                 # unified processing pipeline
+├── pipeline.py                   # legacy single-file entry; calls into pipeline_core
 ├── requirements.txt
 └── README.md
 ```
@@ -220,7 +251,7 @@ For each input image `data/raw_maps/NAME.EXT`, the pipeline writes to `data/proc
 
 ## Development
 
-- Code lives under `src/`. Utilities are in `src/utils/`. Smoke tests are in `scripts/`.
+- Code lives under `src/`. Utilities are in `src/utils/`. Old smoke tests are in `scripts/`.
 - Prefer **pure functions** that accept arrays/paths and return data/arrays.
 - Use **type hints** and **docstrings** consistently.
 

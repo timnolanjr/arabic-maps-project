@@ -39,3 +39,29 @@ def build_overlay(
     """
     palette = DEFAULT_PALETTE if use_default_palette else DEFAULT_PALETTE
     return compose_geometry_overlay(bgr_img, params, palette=palette, text_boxes=text_boxes)
+
+# ----------------------------
+# Back-compat shim (preferred API lives in src.utils.overlay)
+# ----------------------------
+from pathlib import Path
+import json
+import warnings
+
+def render_overlay_from_paths(
+    img_path: Path,
+    params_json_path: Path,
+    out_path: Path,
+    *,
+    unicode_glyphs: bool = True,  # accepted for back-compat; prefer lang='ar' in new API
+    text_boxes=None,
+):
+    """
+    Deprecated: use src.utils.overlay.render_overlay_from_paths instead.
+    """
+    warnings.warn(
+        "render_overlay_from_paths is deprecated; use src.utils.overlay.render_overlay_from_paths",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    from .overlay import render_overlay_from_paths as _impl
+    return _impl(img_path, params_json_path, out_path, unicode_glyphs=unicode_glyphs)

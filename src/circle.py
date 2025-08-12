@@ -16,6 +16,10 @@ import matplotlib.pyplot as plt
 from src.utils.image import median_blur_and_gray, show_image
 from src.utils.io import save_json, update_json, make_output_dir
 
+# Unified palette + drawing helpers
+from src.utils.palette import DEFAULT_PALETTE
+from src.utils.vis import draw_circle as vis_draw_circle, draw_legend
+
 
 # -----------------------------------------------------------------------------
 # Core detection & fitting
@@ -46,11 +50,11 @@ def fit_circle(xs: np.ndarray, ys: np.ndarray) -> Tuple[float, float, float]:
     """
     Fit a circle to points (xs, ys) via least squares. Returns (cx, cy, r).
     """
-    A = np.column_stack([2*xs, 2*ys, np.ones_like(xs)])
-    b = xs*xs + ys*ys
+    A = np.column_stack([2 * xs, 2 * ys, np.ones_like(xs)])
+    b = xs * xs + ys * ys
     c, *_ = np.linalg.lstsq(A, b, rcond=None)
     cx, cy = c[0], c[1]
-    r = math.sqrt(c[2] + cx*cx + cy*cy)
+    r = math.sqrt(c[2] + cx * cx + cy * cy)
     return cx, cy, r
 
 
@@ -65,9 +69,9 @@ def generate_radius_candidates(
     Generate fixed-radius candidates centered on the image center.
     """
     h, w = gray_img.shape
-    cx, cy = w//2, h//2
+    cx, cy = w // 2, h // 2
     factors = np.linspace(min_factor, max_factor, num_candidates)
-    return [(cx, cy, int(f*short_side)) for f in factors]
+    return [(cx, cy, int(f * short_side)) for f in factors]
 
 
 def refine_circle_in_roi(
@@ -84,17 +88,17 @@ def refine_circle_in_roi(
     """
     h, w = gray_img.shape
     m = int(r * (1 + delta))
-    x0, y0 = max(0, int(cx-m)), max(0, int(cy-m))
-    x1, y1 = min(w, int(cx+m)), min(h, int(cy+m))
+    x0, y0 = max(0, int(cx - m)), max(0, int(cy - m))
+    x1, y1 = min(w, int(cx + m)), min(h, int(cy + m))
     roi = gray_img[y0:y1, x0:x1]
-    min_r = max(0, int(r*(1-delta)))
-    max_r = int(r*(1+delta))
+    min_r = max(0, int(r * (1 - delta)))
+    max_r = int(r * (1 + delta))
     raw = detect_circle_hough(roi, param1, param2, min_r, max_r, top_k=100) or []
-    return [(cx_off+x0, cy_off+y0, rad) for (cx_off,cy_off,rad) in raw]
+    return [(cx_off + x0, cy_off + y0, rad) for (cx_off, cy_off, rad) in raw]
 
 
 # -----------------------------------------------------------------------------
-# Drawing
+# Legacy drawing helpers (for previews)
 # -----------------------------------------------------------------------------
 def draw_circle(
     img: np.ndarray,
@@ -104,9 +108,6 @@ def draw_circle(
     color: Tuple[int, int, int] = (0, 255, 0),
     thickness: int = 3,
 ) -> np.ndarray:
-    """
-    Draw a single circle and its center point on the image; return a copy.
-    """
     out = img.copy()
     cv2.circle(out, (int(cx), int(cy)), int(r), color, thickness)
     cv2.circle(out, (int(cx), int(cy)), max(3, int(r * 0.01)), color, -1)
@@ -118,9 +119,6 @@ def draw_multiple_circles(
     circles: List[Tuple[int, int, int]],
     thickness: int = 2,
 ) -> np.ndarray:
-    """
-    Draw each circle with a unique color and label them 1..N.
-    """
     colormap = [
         (0, 255, 0),
         (0, 255, 255),
@@ -134,99 +132,127 @@ def draw_multiple_circles(
     for idx, (cx, cy, r) in enumerate(circles, start=1):
         color = next(color_cycle)
         cv2.circle(out, (int(cx), int(cy)), int(r), color, thickness)
-        cv2.circle(out, (int(cx), int(cy)), max(2, int(r*0.01)), color, -1)
-        cv2.putText(out, str(idx), (int(cx)+5, int(cy)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 2)
+        cv2.circle(out, (int(cx), int(cy)), max(2, int(r * 0.01)), color, -1)
+        cv2.putText(
+            out, str(idx), (int(cx) + 5, int(cy)),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
+        )
     return out
 
 
 # -----------------------------------------------------------------------------
-# Interactive pipeline
+# Interactive + non-interactive unified function (backward compatible)
 # -----------------------------------------------------------------------------
-# src/circle.py  (just replace your existing interactive_detect_and_save)
-
 def interactive_detect_and_save(
-    input_path: Path,
-    base_output_dir: Path,
+    img_path: Path,
+    out_dir: Optional[Path] = None,
+    interactive: bool = False,
+    *,
+    base_output_dir: Optional[Path] = None,  # legacy alias
     n_clicks: int = 8,
-    preview_size: int = 150,   # pixel width of each preview image
-    save_fig: bool = False
-):
-    out_dir = make_output_dir(input_path, base_output_dir)
-    img     = cv2.imread(str(input_path))
-    gray    = median_blur_and_gray(img)
-    h, w    = gray.shape
+    preview_size: int = 150,
+    save_fig: bool = False,
+    **_,
+) -> Dict[str, float]:
+    """
+    Detect the map circle. Returns {"center_x","center_y","radius"}.
+    If no out_dir/base_output_dir is given, defaults to processed_maps/<image_stem>.
 
-    while True:
+    Back-compat:
+      - Accepts legacy kwarg base_output_dir (ignored if out_dir is given).
+      - Extra kwargs tolerated via **_.
+    """
+    img_path = Path(img_path)
+
+    # Default out_dir if none specified
+    if out_dir is None:
+        if base_output_dir is not None:
+            out_dir = make_output_dir(img_path, base_output_dir)
+        else:
+            out_dir = Path("processed_maps") / img_path.stem
+            out_dir.mkdir(parents=True, exist_ok=True)
+
+    bgr = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise RuntimeError(f"Could not read image: {img_path}")
+    gray = median_blur_and_gray(bgr)
+    h, w = gray.shape
+
+    cx = cy = r = None  # type: ignore
+
+    if interactive:
         # --- Step 1: Click perimeter points ---
-        fig, ax = plt.subplots(figsize=(8,8))
-        ax.imshow(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-        ax.set_title(f"Click {n_clicks} points around the circle perimeter.\n(close to continue)")
-        plt.axis("off")
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.imshow(cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB))
+        ax.set_title(f"Click {n_clicks} points around the circle perimeter.\n(close window to continue)")
+        ax.axis("off")
         pts = plt.ginput(n_clicks, timeout=-1)
-        # plt.close(fig)
-
-        xs = np.array([x for x,_ in pts])
-        ys = np.array([y for _,y in pts])
-        cx0, cy0, r0 = fit_circle(xs, ys)
-        cx0, cy0, r0 = fit_circle(xs, ys)
-
-        circ = plt.Circle((cx0, cy0), r0,
-                        edgecolor="red", facecolor="none", linewidth=2)
-        ax.add_patch(circ)
-        plt.draw()
-        plt.show(block=True)
         plt.close(fig)
 
-        # --- Step 2: Refine candidates in ROI ---
+        xs = np.array([x for x, _ in pts])
+        ys = np.array([y for _, y in pts])
+        cx0, cy0, r0 = fit_circle(xs, ys)
+
+        # --- Step 2: Refine in ROI around (cx0,cy0,r0) ---
         candidates = refine_circle_in_roi(gray, cx0, cy0, r0)
         if not candidates:
-            raise RuntimeError("No ROI candidates found")
+            candidates = [(int(cx0), int(cy0), int(r0))]
 
-        # --- Step 3: Batch preview to temp dir ---
+        # --- Step 3: Preview choices and prompt ---
         temp_dir = Path(tempfile.mkdtemp(prefix="circle_preview_"))
-        for idx, (cx, cy, r) in enumerate(candidates, start=1):
-            preview = draw_circle(img, cx, cy, r, color=(0,255,0))
-            # resize for faster viewing
-            # preview = cv2.resize(preview, (preview_size, preview_size))
-            cv2.imwrite(str(temp_dir/f"{idx}.jpg"), preview)
+        try:
+            for idx, (cx_i, cy_i, r_i) in enumerate(candidates, start=1):
+                preview = draw_circle(bgr, cx_i, cy_i, r_i, color=(0, 255, 0))
+                cv2.imwrite(str(temp_dir / f"{idx}.jpg"), preview)
+            print(f"\nPreview images (1–{len(candidates)}) written to: {temp_dir}")
+            choice = input(f"Enter index [1–{len(candidates)}] to accept, or 'r' to restart: ").strip().lower()
+        finally:
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
-        print(f"\nPreview images (1–{len(candidates)}) written to: {temp_dir}")
-        choice = input(f"Enter index [1–{len(candidates)}] to accept, or 'r' to restart: ").strip().lower()
-
-        # Clean up temp previews
-        shutil.rmtree(temp_dir)
-
-        if choice == 'r':
-            # go back to clicking
-            continue
+        if choice == "r":
+            return interactive_detect_and_save(
+                img_path,
+                out_dir=out_dir,
+                interactive=True,
+                n_clicks=n_clicks,
+                preview_size=preview_size,
+                save_fig=save_fig,
+            )
 
         try:
             sel = int(choice)
             if 1 <= sel <= len(candidates):
-                cx, cy, r = candidates[sel-1]
+                cx, cy, r = candidates[sel - 1]
             else:
-                print("Index out of range; restarting.")
-                continue
+                print("Index out of range; defaulting to the first candidate.")
+                cx, cy, r = candidates[0]
         except ValueError:
-            print("Unrecognized input; restarting.")
-            continue
+            print("Unrecognized input; defaulting to the first candidate.")
+            cx, cy, r = candidates[0]
+    else:
+        # Non-interactive: try Hough; fallback heuristic
+        short_side = min(h, w)
+        hough = detect_circle_hough(gray, top_k=1)
+        if hough:
+            cx, cy, r = hough[0]
+        else:
+            cx, cy, r = w / 2.0, h / 2.0, short_side * 0.45
 
-        # --- Step 4: Save final & params.json ---
-        if save_fig:
-            final = draw_circle(img, cx, cy, r)
-            cv2.imwrite(str(out_dir/"circle_final.jpg"), final)
-            print(f"Saved circle_final.jpg in {out_dir}")
-        
-        
-        update_json(
-            out_dir/"params.json",
-            {"center_x":cx, "center_y":cy, "radius":r}
-        )
-        print(f"Saved params.json in {out_dir}")
-        break
+    result = {"center_x": float(cx), "center_y": float(cy), "radius": float(r)}
 
+    # Save JSON & optional overlay
+    with open(out_dir / "circle.json", "w", encoding="utf-8") as f:
+        json.dump(result, f, indent=2)
+    update_json(out_dir / "params.json", result)
 
+    if save_fig:
+        overlay = bgr.copy()
+        vis_draw_circle(overlay, (int(cx), int(cy)), int(r), palette=DEFAULT_PALETTE)
+        draw_legend(overlay, palette=DEFAULT_PALETTE)
+        cv2.imwrite(str(out_dir / f"{img_path.stem}_circle.jpg"), overlay)
+        print(f"Saved circle overlay → {out_dir}")
+
+    return result
 
 
 # -----------------------------------------------------------------------------
@@ -246,11 +272,11 @@ def batch_detect_and_save(
     h, w = gray.shape
 
     candidates = detect_circle_hough(gray, top_k=num_candidates) \
-                 or generate_radius_candidates(gray, min(h,w), num_candidates=num_candidates)
+                 or generate_radius_candidates(gray, min(h, w), num_candidates=num_candidates)
 
     data = {"candidates": candidates, "image_width": w, "image_height": h}
-    save_json(out_dir/"params_candidates.json", data)
-    print(f"Saved {len(candidates)} candidates → {out_dir/'params_candidates.json'}")
+    save_json(out_dir / "params_candidates.json", data)
+    print(f"Saved {len(candidates)} candidates → {out_dir / 'params_candidates.json'}")
 
 
 # -----------------------------------------------------------------------------
@@ -265,14 +291,14 @@ def review_candidates_and_save(
     then save circle_final.jpg + params.json for the accepted circle.
     """
     out_dir = make_output_dir(input_path, base_output_dir)
-    data = json.loads((out_dir/"params_candidates.json").read_text())
+    data = json.loads((out_dir / "params_candidates.json").read_text())
     candidates = data["candidates"]
     w, h = data["image_width"], data["image_height"]
 
     img = cv2.imread(str(input_path))
     chosen = None
     for idx, (cx, cy, r) in enumerate(candidates, start=1):
-        frame = draw_circle(img, cx, cy, r, color=(255,0,255))
+        frame = draw_circle(img, cx, cy, r, color=(255, 0, 255))
         show_image(frame, title=f"Candidate {idx}/{len(candidates)}")
         if input(f"Accept {idx}? (y/N): ").lower().startswith("y"):
             chosen = (cx, cy, r)
@@ -284,15 +310,15 @@ def review_candidates_and_save(
     cx, cy, r = chosen
 
     final = draw_circle(img, cx, cy, r)
-    cv2.imwrite(str(out_dir/"circle_final.jpg"), final)
+    cv2.imwrite(str(out_dir / "circle_final.jpg"), final)
     update_json(
-        out_dir/"params.json",
+        out_dir / "params.json",
         {
             "center_x": cx,
             "center_y": cy,
-            "radius":    r,
-            "image_width":  w,
+            "radius": r,
+            "image_width": w,
             "image_height": h,
-        }
+        },
     )
     print(f"Saved circle_final.jpg & updated params.json in {out_dir}")

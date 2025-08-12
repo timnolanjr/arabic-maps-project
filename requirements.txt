@@ -1,37 +1,37 @@
-# Environment variables
-python-dotenv>=1.0.0
-
-# Testing
-pytest>=8.0
-
-# Core image‑processing 
+# Core runtime (used across src/ and pipeline.py)
 numpy<2.0
-pandas>=1.5.0
 opencv-python>=4.11.0.86
-torch==2.0.1
-torchaudio==2.0.2
-torchvision==0.15.2
-
-# Primary OCR dependencies
-openmim>=0.3.7          # helper CLI for installing OpenMMLab packages
-mmcv==2.0.0		# OpenCV/MMLab wrapper used by MMOCR
-mmengine==0.10.7        # Engine framework required by MMOCR
-mmdet==3.1.0            # Object detection core used by MMOCR
-mmocr==1.0.1            # provides DBNet, PSENet, TextSnake detectors
-
-# Alternative end‑to‑end OCR libraries
-easyocr>=1.7.1          # simple detector+recogniser
-paddleocr>=2.6.1        # optional: PP‑OCR v3/v4 with Arabic model
-ArabicOcr>=1.1.6        # optional: dedicated Arabic OCR wrapper
-
-# Interactivity
 matplotlib>=3.4
 Pillow>=9.0
 tqdm>=4.60
+PyMuPDF>=1.22.0
+scikit-image>=0.22
+scipy>=1.9
 
-# Google Sheets & Drive
-google-api-python-client>=2.0.0
-google-auth>=2.16.0
-google-auth-httplib2>=0.1.0
-gspread>=5.7.0
+# Dev / tooling (optional)
+# python-dotenv>=1.0.0
+# pytest>=8.0
+
+# OCR stacks (optional — pick what you need; these are heavy)
+# --- PyTorch stack ---
+# torch==2.0.1
+# torchvision==0.15.2
+# torchaudio==2.0.2
+# --- OpenMMLab / MMOCR (requires torch) ---
+# openmim>=0.3.7
+# mmcv==2.0.0
+# mmengine==0.10.7
+# mmdet==3.1.0
+# mmocr==1.0.1
+# --- Alternative end-to-end OCR libraries ---
+easyocr>=1.7.1
+# paddleocr>=2.6.1
+# ArabicOcr>=1.1.6
+
+# Integrations / data (optional; not currently imported in src/)
+pandas>=1.5.0
+# google-api-python-client>=2.0.0
+# google-auth>=2.16.0
+# google-auth-httplib2>=0.1.0
+# gspread>=5.7.0
 
