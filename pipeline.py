@@ -2,24 +2,29 @@
 """
 End-to-end pipeline for raw map images, with cardinal labels.
 Supports single files, directories, and glob patterns.
+
+Modes:
+- default: run detection steps (if needed) + render overlay
+- --render-only: just render overlay from existing params.json
+- --no-overlay: run detection steps but don't render
 """
+
+from __future__ import annotations
 
 import argparse
 import glob
 import json
-import math
 from pathlib import Path
 from typing import Iterable, List
 
-import cv2
-
 from src.utils.metadata import init_params_from_image
 from src.circle import interactive_detect_and_save as detect_circle
-from src.edges  import interactive_detect_and_save as detect_edge
+from src.edges import interactive_detect_and_save as detect_edge
 from src.utils.tangent import compute_tangent_point
-
+from src.utils.image import render_overlay_from_paths
 
 ALLOWED_EXT = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
+REQUIRED_KEYS = ["center_x", "center_y", "radius", "rho", "theta", "tangent_x", "tangent_y"]
 
 
 def gather_images(inp: str) -> List[Path]:
@@ -37,141 +42,107 @@ def gather_images(inp: str) -> List[Path]:
             return [p] if p.suffix.lower() in ALLOWED_EXT else []
         if p.is_dir():
             return sorted(
-                [q for q in p.iterdir()
-                 if q.is_file()
-                 and not q.name.startswith(".")
-                 and q.suffix.lower() in ALLOWED_EXT]
+                q for q in p.iterdir()
+                if q.is_file() and not q.name.startswith(".")
+                and q.suffix.lower() in ALLOWED_EXT
             )
 
     return []
 
 
-def process_one_map(img_path: Path, out_base: Path, *, ask: bool = True, force: bool = False) -> None:
-    """Process a single image."""
-    print(f"→ {img_path.name}")
+def params_complete(params_path: Path) -> bool:
+    if not params_path.exists():
+        return False
+    try:
+        data = json.loads(params_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return all(data.get(k) is not None for k in REQUIRED_KEYS)
 
-    out_dir      = out_base / img_path.stem
-    out_dir.mkdir(parents=True, exist_ok=True)
-    params_path  = out_dir / "params.json"
-    overlay_path = out_dir / "params_overlay.jpg"
 
-    # Skip guards unless forcing
-    if not force:
-        if overlay_path.exists():
-            print(f"  ✔ Skipping (overlay exists)")
-            return
-        if params_path.exists():
-            data = json.loads(params_path.read_text(encoding="utf-8"))
-            required = ["center_x","center_y","radius","rho","theta","tangent_x","tangent_y"]
-            if all(data.get(k) is not None for k in required):
-                print(f"  ✔ Skipping (all parameters present)")
-                return
+def ensure_params(img_path: Path, out_dir: Path, *, ask: bool) -> Path:
+    """
+    Run detection steps as needed to produce params.json with all required fields.
+    Returns path to params.json.
+    """
+    params_path = out_dir / "params.json"
+    if params_complete(params_path):
+        return params_path
 
-    # Optional prompt
+    # Optional prompt (per image)
     if ask:
         ans = input(f"  Process {img_path.name}? [Y/n] ").strip().lower()
         if ans == "n":
-            print("  → skipped")
-            return
+            raise RuntimeError("Skipped by user")
 
-    print("  → Processing")
+    # Run steps
+    init_params_from_image(img_path, out_dir.parent)      # writes/initializes params.json
+    detect_circle(img_path, out_dir.parent)               # updates params.json
+    detect_edge(img_path, out_dir.parent)                 # updates params.json
+    compute_tangent_point(params_path)                    # finalizes tangent + rho/theta
 
-    # 1) Metadata init
-    init_params_from_image(img_path, out_base)
+    if not params_complete(params_path):
+        raise RuntimeError("params.json incomplete after detection steps")
 
-    # 2) Circle detection
-    detect_circle(img_path, out_base)
+    return params_path
 
-    # 3) Edge detection
-    detect_edge(img_path, out_base)
 
-    # 4) Tangent computation
-    compute_tangent_point(params_path)
-    data = json.loads(params_path.read_text(encoding="utf-8"))
+def process_one_map(
+    img_path: Path,
+    out_base: Path,
+    *,
+    ask: bool = True,
+    force: bool = False,
+    render_only: bool = False,
+    no_overlay: bool = False,
+) -> None:
+    """Process a single image."""
+    print(f"→ {img_path.name}")
 
-    # Extract parameters
-    cx, cy, r  = int(data["center_x"]), int(data["center_y"]), int(data["radius"])
-    rho, theta = data["rho"], data["theta"]
-    tx, ty     = int(data["tangent_x"]), int(data["tangent_y"])
+    out_dir = out_base / img_path.stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    params_path = out_dir / "params.json"
+    overlay_path = out_dir / "final_overlay.jpg"
 
-    # 5) Overlay generation
-    img = cv2.imread(str(img_path))
-    if img is None:
-        print("  ✖ Failed to read image; skipping")
+    # Skip guard: existing overlay
+    if overlay_path.exists() and not force and not no_overlay:
+        print("  ✔ Skipping (overlay exists). Use --force to overwrite.")
         return
 
-    overlay = img.copy()
-    h, w = overlay.shape[:2]
+    # If render-only, don't run detection—require params.json
+    if render_only:
+        if not params_complete(params_path):
+            print("  ✖ Missing or incomplete params.json; cannot render-only. Run without --render-only first.")
+            return
+        out = render_overlay_from_paths(img_path, params_path, overlay_path, unicode_glyphs=False)
+        print(f"  → Saved overlay to {out}")
+        return
 
-    # scale ~ 1.0 at 1000px
-    scale        = max(0.1, min(w, h) / 1000.0)
-    font_scale   = 0.6 * scale
-    text_thick   = max(1, int(2 * scale))
-    circle_thick = max(1, int(2 * scale))
-    line_thick   = max(1, int(2 * scale))
-    marker_rad   = max(2, int(max(2, r * 0.02)))  # keep readable
-    offset_px    = int(20 * scale)
+    # Otherwise, ensure params.json exists/complete
+    try:
+        params_path = ensure_params(img_path, out_dir, ask=ask)
+        print("  ✔ Parameters ready")
+    except RuntimeError as e:
+        print(f"  → {e}")
+        return
 
-    # Draw circle + center
-    cv2.circle(overlay, (cx, cy), r, (0, 255, 0), thickness=int(max(2, circle_thick // 2)))
-    cv2.circle(overlay, (cx, cy), marker_rad, (0, 255, 0), -1)
-
-    # Draw edge line from (rho, theta)
-    a, b = math.cos(theta), math.sin(theta)
-    if abs(b) < 1e-6:
-        x = int(rho / a) if abs(a) > 1e-12 else 0
-        p1, p2 = (x, 0), (x, h)
+    # Render overlay unless suppressed
+    if not no_overlay:
+        out = render_overlay_from_paths(img_path, params_path, overlay_path, unicode_glyphs=False)
+        print(f"  → Saved overlay to {out}")
     else:
-        y0 = (rho - 0 * a) / b
-        y1 = (rho - w * a) / b
-        p1, p2 = (0, int(round(y0))), (w, int(round(y1)))
-    cv2.line(overlay, p1, p2, (255, 0, 0), thickness=line_thick)
-
-    # Cardinal-direction labels (S at tangent)
-    cardinals = {
-            "S": (tx, ty),
-            "W": (cx - r, cy),
-            "N": (cx, cy + r),
-            "E": (cx + r, cy),
-        }
-    for label, (x, y) in cardinals.items():
-        cx, cy = int(x), int(y)
-
-        # draw the black circle
-        cv2.circle(overlay, (cx, cy), int(1.5 * marker_rad), (0, 0, 0), -1)
-
-        # measure text and compute centered origin
-        (tw, th), bl = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale, text_thick)
-        org = (cx - tw // 2, cy + th // 2 - bl // 2)  # center the text box on (cx, cy)
-
-        # draw the label, anti-aliased
-        cv2.putText(
-            overlay, label, org,
-            cv2.FONT_HERSHEY_SIMPLEX, font_scale,
-            (255, 255, 255), text_thick, cv2.LINE_AA
-        )
+        print("  → Skipped overlay rendering (per --no-overlay)")
 
 
-    # Annotate metadata
-    text_lines = [
-        f"cx={cx}, cy={cy}, r={r}",
-        f"rho={rho:.1f}, theta={math.degrees(theta):.1f} degrees",
-        f"South / الجَنوب: tx={tx}, ty={ty}",
-    ]
-    y0 = offset_px
-    for line in text_lines:
-        cv2.putText(
-            overlay, line, (offset_px, y0),
-            cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), text_thick
-        )
-        y0 += int(25 * scale)
-
-    # Save final overlay
-    cv2.imwrite(str(overlay_path), overlay)
-    print(f"  → Saved overlay to {overlay_path}")
-
-
-def process_all_maps(images: Iterable[Path], out_base: Path, *, ask: bool, force: bool) -> None:
+def process_all_maps(
+    images: Iterable[Path],
+    out_base: Path,
+    *,
+    ask: bool,
+    force: bool,
+    render_only: bool,
+    no_overlay: bool,
+) -> None:
     images = list(images)
     total = len(images)
     if total == 0:
@@ -180,16 +151,34 @@ def process_all_maps(images: Iterable[Path], out_base: Path, *, ask: bool, force
 
     for idx, img_path in enumerate(images, start=1):
         print(f"\n[{idx}/{total}] ", end="")
-        process_one_map(img_path, out_base, ask=ask, force=force)
+        process_one_map(
+            img_path,
+            out_base,
+            ask=ask,
+            force=force,
+            render_only=render_only,
+            no_overlay=no_overlay,
+        )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Process raw map images (file, directory, or glob).")
+    parser = argparse.ArgumentParser(
+        description="Process raw map images (file, directory, or glob)."
+    )
     parser.add_argument("input", help="Image file, directory, or glob (e.g., 'data/raw_maps/*.jpg').")
     parser.add_argument("-o", "--out", default="data/processed_maps", help="Output base directory.")
     parser.add_argument("-y", "--yes", action="store_true", help="Process without interactive prompts.")
-    parser.add_argument("--force", action="store_true", help="Re-run even if outputs exist/are complete.")
+    parser.add_argument("--force", action="store_true", help="Overwrite existing overlays.")
+    parser.add_argument("--render-only", action="store_true", help="Only render overlay from existing params.json.")
+    parser.add_argument("--no-overlay", action="store_true", help="Run detection steps only; skip overlay.")
     args = parser.parse_args()
 
     imgs = gather_images(args.input)
-    process_all_maps(imgs, Path(args.out), ask=not args.yes, force=args.force)
+    process_all_maps(
+        imgs,
+        Path(args.out),
+        ask=not args.yes,
+        force=args.force,
+        render_only=args.render_only,
+        no_overlay=args.no_overlay,
+    )

@@ -1,12 +1,13 @@
 # Arabic Maps Project
 
-A digital-humanities toolkit for **large-scale analysis of circular world maps** in medieval Arabic manuscripts. The project turns visual variation into data by detecting each map’s circular frame, identifying a reference edge, computing the tangent point, and (optionally) detecting Arabic text regions to support OCR and toponym analysis.
+A digital-humanities toolkit for **large-scale analysis of circular world maps** in medieval Arabic manuscripts. Currently, the project detects each map’s circular frame, detects the orientation of manuscript's upper edge, computes the tangent point, and detects Arabic text regions to support OCR and toponym analysis.
 
 ---
 
 ## Contents
 - [Motivation](#motivation)
 - [Highlights](#highlights)
+- [Example Results](#example-results)
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [Data layout](#data-layout)
@@ -31,23 +32,6 @@ Right: Flipped view to match a north-up orientation.* [\[1\]](https://www.1001in
 
 ---
 
-## Example Results
-
-![Al-Qazwīnī Map Example](assets/images/al-Qazwīnī_Arabic_MSS_575.jpg)
-
-*Map extracted from a sixteenth-century Ottoman manuscript of Persian cosmographer and geographer al-Qazwīnī’s “The Marvels of Creation.”*
-
-
-![Parameter Overlay Map Example](assets/images/params_overlay.jpg)
-
-*`params_overlay.jpg` depicting geometric parameters (circle, center, top-edge, tangent South / جنوب / الجَنوب, cardinal directions*
-
-![Text Detect Overlay Map Example](assets/images/al-Qazwīnī_Arabic_MSS_575_mser.jpg)
-
-*`_mser.jpg` depicting text detection's current state of affairs: Catching >90% of all text with MSER method, with many false-positives.*
-
----
-
 ## Highlights
 
 - **Metadata extraction**: image type, size, dimensions, color space. Assumes south-up orientation (South/جنوب/الجَنوب nearest the top edge).
@@ -58,6 +42,42 @@ Right: Flipped view to match a north-up orientation.* [\[1\]](https://www.1001in
 - **Unified pipeline** (`pipeline.py`): runs metadata → circle → edge → tangent and writes overlays.
 
 ---
+
+## Example Results
+
+### Map Preprocessing
+
+![Al-Qazwīnī Map Example](assets/images/al-Qazwīnī_Arabic_MSS_575.jpg)
+
+*Map extracted from a sixteenth-century Ottoman manuscript of Persian cosmographer and geographer al-Qazwīnī’s “The Marvels of Creation.”*
+
+We run the preprocessing pipeline on al-Qazwīnī’s work with the following code snippet in the terminal:
+
+```bash
+python pipeline.py "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg"
+```
+
+![Parameter Overlay Map Example](assets/images/params_overlay.jpg)
+
+*`params_overlay.jpg` depicting geometric parameters (circle, center, top-edge, tangent South / جنوب / الجَنوب, cardinal directions*
+
+So, we can successfully detect the circular frame of the map and the point on the map we call South / جنوب / الجَنوب by finding the circle's tangent point to the manuscript edge. Also returns `params.json` (see: [Outputs](#outputs)).
+
+### Text Detection and Optical Character Recognition
+
+The current challenge is to extract the toponyms from each map, an exploration in Optical Character Recognition (OCR). Some things thathat ake this process non-trivial are:
+
+- The vast majority of OCR literature and text detection methods focus on English and Left-to-Right reading systems.
+- No models are tuned to our use-case - most train on natural scenes (images, not maps) or more strucuted documents (e.g., books).
+- We need a system that is precise (few false positives), but more importantly one that has high recall (few false *negatives*).
+- I personally don't speak Arabic so I anticipate a bottleneck. May need to recruit JB to tune the model once we've got a better plan.
+
+![Text Detect Overlay Map Example](assets/images/al-Qazwīnī_Arabic_MSS_575_mser.jpg)
+
+*`_mser.jpg` depicting text detection's current state of affairs: Catching >90% of all text with MSER method, with many false-positives.*
+
+---
+
 
 ## Installation
 
@@ -195,7 +215,7 @@ For each input image `data/raw_maps/NAME.EXT`, the pipeline writes to `data/proc
   ```json
   {
     "filetype": "jpg",
-    "filesize": 1234567«6121401,
+    "filesize": 6121401,
     "image_width": 6760,
     "image_height": 5080,
     "colorspace": "sRGB",
@@ -224,7 +244,12 @@ For each input image `data/raw_maps/NAME.EXT`, the pipeline writes to `data/proc
    - Export polar coordinates for boxes/labels using circle + tangent reference.
    - Implement multi-map **similarity metrics** (shape, label placement) and clustering.
 
-3. **Visualization & Sharing**
+3. **Address Misaligned Maps**
+   - Pipeline assumes "perfect circle," but there are maps with two flaws: (1) non-circular (oblong), (2) hemispheres misaligned.
+   - Develop small "map splitter" utility to split maps whose hemicircles are misaligned. 
+   - Add back in the pdf embedded image extractor utility for full transparency.
+
+4. **Visualization & Sharing**
    - Streamlit dashboard for per-map review and cross-map comparison.
    - Optional Google Sheets/Drive sync for metadata status tracking.
 
