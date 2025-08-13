@@ -34,14 +34,26 @@ Right: Flipped view to match a north-up orientation.* [\[1\]](https://www.1001in
 
 ## Highlights
 
-- **Metadata extraction**: image type, size, dimensions, color space. Assumes south-up orientation (South/جنوب/الجَنوب nearest the top edge).
-- **Circle detection** (`src/circle.py`): Hough-based, with interactive refinement and batch candidate review.
-- **Edge detection** (`src/edges.py`): Canny + Hough for (near-horizontal) top edge; ROI-guided interactive mode available.
-- **Tangent computation** (`src/utils/tangent.py`): computes the upper tangent point from circle and edge parameters (labeled South / جنوب / الجَنوب).
-- **Text detection** (`src/text_detection.py`): morphology, MSER, Canny, Sobel, and gradient variants; optional NMS and geometric/stroke-width filters.
-- **Unified pipeline** (`pipeline.py`): runs metadata → circle → edge → tangent and writes overlays.
+- **Unified CLI** (`src/cli.py`) with subcommands:
+  - `pipeline` → metadata → circle → edges → tangent (writes `params.json` + overlay)
+  - `circle` / `edges` → run geometry steps individually (interactive or batch)
+  - `text` → **MSER** text detection (recall-first), with optional multiscale, morphology merge, circle coverage, geometry filter, and NMS; draws a legend and can stamp a param summary in the overlay.
+- **Geometry**
+  - `src/circle.py` (Hough + interactive refinement)
+  - `src/edges.py` (Canny+Hough; near-horizontal top edge; interactive ROI mode)
+  - `src/utils/tangent.py` (tangent “South” point from circle + edge)
+- **Text (modular stack in `src/text/`)**
+  - `backends/mser.py` (OpenCV MSER with robust param wiring)
+  - `filters/{geometry,circle,nms,morphology}.py`
+  - `visualize.py` (stage legend UL, optional param title TR)
+  - `config.py` (dataclasses for MSER, channels, multiscale, morphology, geometry, circle, NMS, visual)
+  - `detect.py` (orchestrator)
+- **Paired outputs** use `src/utils/naming.py` to write:
+  ```
+  processed_maps/<stem>/<stem>_text_<method>_run_XXXX.jpg
+  processed_maps/<stem>/<stem>_text_<method>_run_XXXX.json
+  ```
 
----
 
 ## Example Results
 
@@ -66,7 +78,7 @@ So, we can successfully detect the circular frame of the map and the point on th
 
 ### Text Detection and Optical Character Recognition
 
-The current challenge is to extract the toponyms from each map, an exploration in Optical Character Recognition (OCR). Some things thathat ake this process non-trivial are:
+The current challenge is to extract the toponyms from each map, an exploration in Optical Character Recognition (OCR). Some things that make this process non-trivial are:
 
 - The vast majority of OCR literature and text detection methods focus on English and Left-to-Right reading systems.
 - No models are tuned to our use-case - most train on natural scenes (images, not maps) or more strucuted documents (e.g., books).
@@ -124,7 +136,7 @@ You will get per-image folders under `data/processed_maps/<image_stem>/` with a 
 
 ### Full Pipeline
 
-Runs metadata → circle → edge → tangent; writes per-image outputs under data/processed_maps/<stem>/
+Runs metadata → circle → edge → tangent; writes per-image outputs under `data/processed_maps/img/`
 ```
 python -m src.cli pipeline data/raw_maps -o data/processed_maps
 ```
@@ -171,6 +183,30 @@ Method choices: `morph | mser | canny | sobel | gradient`
 python -m src.cli text   "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --method mser
 ```
 
+**Core MSER knobs**:
+- `--method mser`
+- `--polarity {dark,bright,both}` (we default to **both**)
+- `--channels gray[,r,g,b,labL]` (union of per-channel detections)
+- `--multiscale --scales s1,s2[,s3]` (union of per-scale detections)
+- `--mser-delta INT` (default 5)
+- `--mser-min-area INT` (pixels; e.g., 60)
+- `--mser-max-area INT` (pixels; e.g., 14400)
+- `--mser-max-variation FLOAT` (default ~0.3)
+- `--mser-min-diversity FLOAT` (default ~0.2)
+- `--mser-max-evolution INT` (default 200)
+- `--mser-area-threshold FLOAT` (default 1.01)
+- `--mser-min-margin FLOAT` (default 0.003)
+- `--mser-edge-blur-size INT` (e.g., 3–5)
+
+**Optional post-filters**:
+- **Morphology merge:** `--morph --morph-close 3 --morph-open 0 --morph-iter 1`
+- **Circle coverage:** `--circle-filter --params <params.json> --circle-min-cover 0.5` \
+  *(optional tolerance: `--circle-grow 1.02` if enabled)*
+- **Geometry filter:** `--geom-area-min-pct 5e-5 --geom-area-max-pct 0.02 --geom-ar-min 0.15 --geom-ar-max 8.0` \
+  (use `--no-geom-filter` to disable)
+- **NMS:** `--nms-iou 0.3` (use `--no-nms` to disable)
+
+
 ### Image Overlay Only
 
 Writes a final overlay (with legend + metadata) to the given path.
@@ -187,30 +223,25 @@ python -m src.cli overlay "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" \
 ```
 arabic-maps-project/
 ├── data/
-│   ├── raw_maps/                 # input TIFF/JPG/PNG scans, oriented south-up
-│   └── processed_maps/<stem>/    # per-image outputs
-│       ├── params.json           # single source of truth (metadata + geometry: center, radius, rho, theta, tangent)
-│       └── params_overlay.jpg    # unified overlay (auto-scaled), legend in UL w/ colored dots + numeric metadata
-│
+│   ├── raw_maps/                         # input scans (TIFF/JPG/PNG), south-up
+│   └── processed_maps/<stem>/            # per-image outputs
+│       ├── params.json                   # center/radius, rho/theta, tangent, metadata
+│       ├── params_overlay.jpg            # circle + edge + tangent (legend UL)
+│       ├── <stem>_text_mser_run_0001.jpg
+│       └── <stem>_text_mser_run_0001.json
 ├── src/
-│   ├── circle.py                 # circle detection (interactive & batch) with consistent return dict
-│   ├── edges.py                  # top-edge detection (interactive & batch) with consistent return dict
-│   ├── text_detection.py         # text detectors (morph, MSER, canny/sobel/gradient variants)
-│   ├── cli.py                    # command-line entry points (pipeline, circle, edges, text, overlay)
-│   ├── pipeline_core.py          # orchestration used by the CLI pipeline
-│   └── utils/
-│       ├── extract_pdf.py        # PDF image extractor: export embedded images using PyMuPDF
-│       ├── image.py              # grayscale/blur helpers; legacy overlay shim (deprecated in favor of overlay.py)
-│       ├── io.py                 # I/O helpers (image/JSON)
-│       ├── interactive.py        # point-click helpers
-│       ├── metadata.py           # params.json init from image
-│       ├── overlay.py            # canonical render_overlay_from_paths(img, params.json → overlay)
-│       ├── palette.py            # unified overlay colors
-│       ├── tangent.py            # tangent coordinate computation
-│       └── vis.py                # drawing + composition (auto-scale; UL legend with colored, metadata-only lines)
-│
-├── pipeline.py                   # legacy single-file entry; calls into pipeline_core
-├── requirements.txt
+│   ├── cli.py                            # CLI: pipeline, circle, edges, text
+│   ├── circle.py                         # circle detection (batch/interactive)
+│   ├── edges.py                          # top-edge detection (batch/interactive)
+│   ├── utils/                            # overlay, IO, palette, naming, etc.
+│   └── text/
+│       ├── backends/mser.py              # MSER backend
+│       ├── filters/{geometry,circle,nms,morphology}.py
+│       ├── visualize.py                  # stage overlays (legend/counts)
+│       ├── config.py                     # dataclasses for all knobs
+│       └── detect.py                     # minimal orchestrator (for extensions)
+├── scripts/
+│   └── sweep_mser.py                     # 1-var sweeps with paired outputs
 └── README.md
 ```
 
@@ -255,7 +286,6 @@ For each input image `data/raw_maps/NAME.EXT`, the pipeline writes to `data/proc
 3. **Address Misaligned Maps**
    - Pipeline assumes "perfect circle," but there are maps with two flaws: (1) non-circular (oblong), (2) hemispheres misaligned.
    - Develop small "map splitter" utility to split maps whose hemicircles are misaligned. 
-   - Add back in the pdf embedded image extractor utility for full transparency.
 
 4. **Visualization & Sharing**
    - Streamlit dashboard for per-map review and cross-map comparison.

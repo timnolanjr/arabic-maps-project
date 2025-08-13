@@ -1,280 +1,276 @@
-# src/text_detection.py
-
-#!/usr/bin/env python3
-"""
-Text detection utilities for the Arabic Maps project.
-
-Each detector now takes an `nms_filter: bool = False` argument.
-If True, non-max suppression is run; otherwise raw boxes are returned.
-"""
-
 from __future__ import annotations
-from typing import List, Tuple
+
+from pathlib import Path
+from typing import List, Tuple, Dict, Any, Optional
+from dataclasses import asdict
+from collections import Counter
+import json
+import hashlib
+import datetime as _dt
 
 import cv2
 import numpy as np
-from skimage.measure import regionprops
-from skimage.morphology import skeletonize
-from scipy.ndimage import distance_transform_edt
 
-BoundingBox = Tuple[int, int, int, int]
+from src.text.backends.mser import detect_mser_regions
+from src.text.config import TextDetectConfig
+from src.text.visualize import render_stage_overlay
+from src.utils.palette import DEFAULT_PALETTE, Palette
 
-
-def _prepare_image(img: np.ndarray) -> np.ndarray:
-    if img.ndim == 3 and img.shape[2] == 3:
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    else:
-        gray = img.copy()
-    return cv2.medianBlur(gray, 3)
+# Filters
+from src.text.filters.geometry import GeometryConfig, geometry_filter_boxes
+from src.text.filters.circle import circle_coverage_filter
+from src.text.filters.nms import nms_filter
+from src.text.filters.morphology import boxes_to_mask, morph_merge_mask, mask_to_boxes
 
 
-def detect_text_morphology(
-    img: np.ndarray,
-    *,
-    nms_filter: bool = False,
-) -> List[BoundingBox]:
-    gray = _prepare_image(img)
-    binary = cv2.adaptiveThreshold(
-        gray, 255,
-        adaptiveMethod=cv2.ADAPTIVE_THRESH_MEAN_C,
-        thresholdType=cv2.THRESH_BINARY_INV,
-        blockSize=31, C=15,
-    )
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
-    dilated = cv2.dilate(binary, kernel, iterations=1)
-    contours, _ = cv2.findContours(
-        dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-    )
-
-    boxes: List[BoundingBox] = []
-    h, w = gray.shape
-    for cnt in contours:
-        x, y, cw, ch = cv2.boundingRect(cnt)
-        if cw * ch < 100:
-            continue
-        aspect = cw / float(ch)
-        if aspect < 0.2 or aspect > 15:
-            continue
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(w, x + cw), min(h, y + ch)
-        boxes.append((x0, y0, x1 - x0, y1 - y0))
-
-    return _non_max_suppression(boxes) if nms_filter else boxes
+# -----------------------------------------------------------------------------
+# Helpers
+# -----------------------------------------------------------------------------
+def _sha256_file(p: Path) -> str:
+    with open(p, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
 
 
-def detect_text_mser(
-    img: np.ndarray,
-    *,
-    # MSER parameters
-    delta: int = 5,
-    min_area: int = 60,
-    max_area: int = 14400,
-    max_variation: float = 0.3,
-    min_diversity: float = 0.2,
-    max_evolution: int = 1000,
-    area_threshold: float = 1.01,
-    min_margin: float = 0.003,
-    edge_blur_size: int = 3,
-    
-    # Post-run filters
-    geom_filter: bool = False,
-    sw_filter: bool = False,
-    sw_threshold: float = 0.4,
-    geom_thresholds: dict | None = None,
-    nms_filter: bool = False,
-) -> List[BoundingBox]:
-    gray = _prepare_image(img)
-
-    mser = cv2.MSER_create(
-        delta,
-        min_area,
-        max_area,
-        max_variation,
-        min_diversity,
-        max_evolution,
-        area_threshold,
-        min_margin,
-        edge_blur_size,
-    )
-    regions, _ = mser.detectRegions(gray)
-
-    geom_thresholds = geom_thresholds or {
-        "aspect_max": 3.0,
-        "eccentricity_max": 0.995,
-        "solidity_min": 0.3,
-        "extent_range": (0.2, 0.9),
-        "euler_min": -4,
-    }
-
-    boxes: List[BoundingBox] = []
-    h, w = gray.shape
-
-    for pts in regions:
-        x, y, cw, ch = cv2.boundingRect(pts.reshape(-1, 1, 2))
-        if cw * ch < min_area:
-            continue
-
-        mask = np.zeros((h, w), dtype=np.uint8)
-        mask[pts[:, 1], pts[:, 0]] = 1
-
-        if geom_filter:
-            props = regionprops(mask)[0]
-            aspect = cw / float(ch)
-            if aspect > geom_thresholds["aspect_max"]:
-                continue
-            if props.eccentricity > geom_thresholds["eccentricity_max"]:
-                continue
-            if props.solidity < geom_thresholds["solidity_min"]:
-                continue
-            if not (geom_thresholds["extent_range"][0] <= props.extent <= geom_thresholds["extent_range"][1]):
-                continue
-            if props.euler_number < geom_thresholds["euler_min"]:
-                continue
-
-        if sw_filter:
-            padded = np.pad(mask, 1, mode="constant", constant_values=0)
-            dist = distance_transform_edt(padded)
-            skel = skeletonize(padded > 0)
-            sw_vals = dist[skel]
-            if sw_vals.size == 0:
-                continue
-            sw_metric = sw_vals.std() / float(sw_vals.mean())
-            if sw_metric > sw_threshold:
-                continue
-
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(w, x + cw), min(h, y + ch)
-        boxes.append((x0, y0, x1 - x0, y1 - y0))
-
-    return _non_max_suppression(boxes) if nms_filter else boxes
+def _write_jsonl(path: Path, records: List[Dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
 
 
-def detect_text_canny(
-    img: np.ndarray,
-    *,
-    nms_filter: bool = False,
-) -> List[BoundingBox]:
-    gray = _prepare_image(img)
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
-    dilated = cv2.dilate(edges, kernel, iterations=1)
-    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    boxes: List[BoundingBox] = []
-    h, w = gray.shape
-    for cnt in contours:
-        x, y, cw, ch = cv2.boundingRect(cnt)
-        if cw * ch < 100:
-            continue
-        aspect = cw / float(ch)
-        if aspect < 0.1 or aspect > 20:
-            continue
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(w, x + cw), min(h, y + ch)
-        boxes.append((x0, y0, x1 - x0, y1 - y0))
-
-    return _non_max_suppression(boxes) if nms_filter else boxes
+def _to_boxes(records: List[Dict[str, Any]]) -> List[Tuple[int, int, int, int]]:
+    return [tuple(map(int, r["bbox"])) for r in records if r.get("status") == "kept"]
 
 
-def detect_text_sobel(
-    img: np.ndarray,
-    *,
-    nms_filter: bool = False,
-) -> List[BoundingBox]:
-    gray = _prepare_image(img)
-    sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
-    sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-    mag = cv2.magnitude(sobel_x, sobel_y)
-    mag8 = cv2.convertScaleAbs(mag)
-    _, binary = cv2.threshold(mag8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
-    dilated = cv2.dilate(binary, kernel, iterations=1)
-    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    boxes: List[BoundingBox] = []
-    h, w = gray.shape
-    for cnt in contours:
-        x, y, cw, ch = cv2.boundingRect(cnt)
-        if cw * ch < 100:
-            continue
-        aspect = cw / float(ch)
-        if aspect < 0.1 or aspect > 20:
-            continue
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(w, x + cw), min(h, y + ch)
-        boxes.append((x0, y0, x1 - x0, y1 - y0))
-
-    return _non_max_suppression(boxes) if nms_filter else boxes
-
-
-def detect_text_gradient(
-    img: np.ndarray,
-    *,
-    nms_filter: bool = False,
-) -> List[BoundingBox]:
-    gray = _prepare_image(img)
-    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-    grad = cv2.morphologyEx(gray, cv2.MORPH_GRADIENT, kernel)
-    grad8 = cv2.convertScaleAbs(grad)
-    _, binary = cv2.threshold(grad8, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    horiz = cv2.getStructuringElement(cv2.MORPH_RECT, (15, 3))
-    dilated = cv2.dilate(binary, horiz, iterations=1)
-    contours, _ = cv2.findContours(dilated, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    boxes: List[BoundingBox] = []
-    h, w = gray.shape
-    for cnt in contours:
-        x, y, cw, ch = cv2.boundingRect(cnt)
-        if cw * ch < 100:
-            continue
-        aspect = cw / float(ch)
-        if aspect < 0.1 or aspect > 20:
-            continue
-        x0, y0 = max(0, x), max(0, y)
-        x1, y1 = min(w, x + cw), min(h, y + ch)
-        boxes.append((x0, y0, x1 - x0, y1 - y0))
-
-    return _non_max_suppression(boxes) if nms_filter else boxes
-
-
-def draw_bounding_boxes(
-    img: np.ndarray,
-    boxes: List[BoundingBox],
-    color: tuple[int, int, int] = (0, 255, 0),
-    thickness: int = 2,
-) -> np.ndarray:
-    out = img.copy()
+def _resize_boxes(boxes: List[Tuple[int, int, int, int]], scale: float) -> List[Tuple[int, int, int, int]]:
+    if abs(scale - 1.0) < 1e-6:
+        return boxes
+    inv = 1.0 / float(scale)
+    out: List[Tuple[int, int, int, int]] = []
     for x, y, w, h in boxes:
-        cv2.rectangle(out, (x, y), (x + w, y + h), color, thickness)
+        out.append((
+            int(round(x * inv)),
+            int(round(y * inv)),
+            int(round(w * inv)),
+            int(round(h * inv)),
+        ))
     return out
 
 
-def _non_max_suppression(
-    boxes: List[BoundingBox],
-    iou_threshold: float = 0.3
-) -> List[BoundingBox]:
-    if not boxes:
-        return []
-    arr = np.array([[x, y, x + w, y + h] for x, y, w, h in boxes], dtype=float)
-    x1, y1, x2, y2 = arr[:,0], arr[:,1], arr[:,2], arr[:,3]
-    areas = (x2 - x1 + 1) * (y2 - y1 + 1)
-    order = areas.argsort()[::-1]
-    keep: List[int] = []
-    while order.size > 0:
-        i = order[0]
-        keep.append(i)
-        xx1 = np.maximum(x1[i], x1[order[1:]])
-        yy1 = np.maximum(y1[i], y1[order[1:]])
-        xx2 = np.minimum(x2[i], x2[order[1:]])
-        yy2 = np.minimum(y2[i], y2[order[1:]])
-        w = np.maximum(0.0, xx2 - xx1 + 1)
-        h = np.maximum(0.0, yy2 - yy1 + 1)
-        inter = w * h
-        union = areas[i] + areas[order[1:]] - inter
-        iou = inter / union
-        inds = np.where(iou <= iou_threshold)[0]
-        order = order[inds + 1]
-    return [
-        (int(x1[idx]), int(y1[idx]), int(x2[idx] - x1[idx]), int(y2[idx] - y1[idx]))
-        for idx in keep
-    ]
+def _run_mser_variants(bgr: np.ndarray, cfg: TextDetectConfig) -> List[Tuple[int, int, int, int]]:
+    """
+    Run MSER over requested polarities and scales; return UNION of boxes
+    projected back to full-res coordinates.
+    """
+    polar = cfg.mser.polarity.lower()
+    polarities = [polar] if polar in ("dark", "bright") else ("dark", "bright")
+    scales = tuple(cfg.multiscale.scales) if getattr(cfg, "multiscale", None) and cfg.multiscale.enabled else (1.0,)
+
+    mp = cfg.mser
+    boxes_all: List[Tuple[int, int, int, int]] = []
+
+    for s in scales:
+        if s != 1.0:
+            img_s = cv2.resize(bgr, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+        else:
+            img_s = bgr
+
+        for pol in polarities:
+            gray = cv2.cvtColor(img_s, cv2.COLOR_BGR2GRAY)
+            if pol == "bright":
+                gray = cv2.bitwise_not(gray)
+            img_for_backend = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+            regions = detect_mser_regions(
+                img_for_backend,
+                delta=mp.delta,
+                min_area=mp.min_area,
+                max_area=mp.max_area,
+                max_variation=mp.max_variation,
+                min_diversity=mp.min_diversity,
+                max_evolution=mp.max_evolution,
+                area_threshold=mp.area_threshold,
+                min_margin=mp.min_margin,
+                edge_blur_size=mp.edge_blur_size,
+            )
+            boxes = [r.bbox for r in regions]
+            boxes = _resize_boxes(boxes, s)
+            boxes_all.extend(boxes)
+
+    return boxes_all
+
+
+# -----------------------------------------------------------------------------
+# Orchestrator
+# -----------------------------------------------------------------------------
+def detect_text_regions(
+    bgr: np.ndarray,
+    cfg: TextDetectConfig,
+    *,
+    circle_center: Optional[Tuple[int, int]] = None,
+    circle_radius: Optional[int] = None,
+    img_path: Optional[Path] = None,       # for JSONL metadata (optional)
+    params_path: Optional[Path] = None,    # for JSONL metadata (optional)
+    out_jsonl: Optional[Path] = None,      # write JSONL if provided (optional)
+    run_id: Optional[str] = None,
+    return_debug: bool = False,            # if True → (boxes, overlay, records, summary)
+    return_overlay: bool = False,          # if True → (boxes, overlay)
+    overlay_title: Optional[str] = None,   # draw this title on the overlay (TR)
+    palette: Palette = DEFAULT_PALETTE,
+):
+    """
+    MSER-based text region detection with optional:
+      - polarity ('dark'/'bright'/'both')
+      - multi-scale pyramid
+      - morphology merge (close/open on a union mask)
+      - geometry filter (area/aspect)
+      - circle coverage filter
+      - NMS
+
+    Returns:
+      - if return_debug:  (kept_boxes, overlay_bgr, records, summary)
+      - elif return_overlay: (kept_boxes, overlay_bgr)
+      - else: kept_boxes
+    """
+    H, W = bgr.shape[:2]
+    img_area = float(H * W)
+
+    # --- 1) Candidates via MSER variants (polarity & scales) ---
+    boxes0 = _run_mser_variants(bgr, cfg)
+
+    # --- 1b) Optional morphology merge on union mask ---
+    if getattr(cfg, "morph", None) and cfg.morph.enabled:
+        mask = boxes_to_mask(boxes0, (H, W))
+        mask = morph_merge_mask(mask, cfg.morph.close_ksize, cfg.morph.open_ksize, cfg.morph.iterations)
+        boxes0 = mask_to_boxes(mask)
+
+    # --- Seed records (status=candidate) ---
+    records: List[Dict[str, Any]] = []
+    for i, (x, y, w, h) in enumerate(boxes0):
+        records.append({
+            "id": f"mser-{i:06d}",
+            "bbox": [int(x), int(y), int(w), int(h)],
+            "score": 1.0,
+            "status": "candidate",
+            "stage": "mser",
+            "method": "mser",
+            "method_version": cv2.__version__,
+            "coord_space": "image_native",
+        })
+
+    # --- 2) Geometry filter (area/aspect) ---
+    if cfg.geometry.enabled:
+        g_min_px = int(cfg.geometry.area_pct[0] * img_area)
+        g_max_px = int(cfg.geometry.area_pct[1] * img_area)
+        kept_idx, removed_idx = geometry_filter_boxes(
+            [tuple(map(int, r["bbox"])) for r in records],
+            GeometryConfig(area_px=(g_min_px, g_max_px), aspect_ratio=cfg.geometry.aspect_ratio),
+        )
+        for idx in removed_idx:
+            records[idx]["status"] = "removed_geom"
+            records[idx]["stage"] = "geom"
+            records[idx]["reason"] = "geometry"
+        for idx in kept_idx:
+            if records[idx]["status"] == "candidate":
+                records[idx]["status"] = "post_geom"
+                records[idx]["stage"] = "geom"
+    else:
+        for r in records:
+            if r["status"] == "candidate":
+                r["status"] = "post_geom"
+                r["stage"] = "geom"
+
+    # --- 3) Circle coverage filter ---
+    if cfg.circle.enabled and circle_center is not None and circle_radius is not None:
+        survivors = [i for i, r in enumerate(records) if r["status"].startswith("post_")]
+        if survivors:
+            boxes = [tuple(map(int, records[i]["bbox"])) for i in survivors]
+            kept_local, removed_local = circle_coverage_filter(
+                boxes,
+                center=circle_center,
+                radius=int(circle_radius),
+                min_cover=cfg.circle.min_cover,
+            )
+            kept_idx = [survivors[k] for k in kept_local]
+            removed_idx = [survivors[k] for k in removed_local]
+            for idx in removed_idx:
+                if records[idx]["status"].startswith("post_"):
+                    records[idx]["status"] = "removed_circle"
+                    records[idx]["stage"] = "circle"
+                    records[idx]["reason"] = f"circle_min_cover<{cfg.circle.min_cover}"
+            for idx in kept_idx:
+                if records[idx]["status"].startswith("post_"):
+                    records[idx]["status"] = "post_circle"
+                    records[idx]["stage"] = "circle"
+    else:
+        for r in records:
+            if r["status"].startswith("post_"):
+                r["status"] = "post_circle"
+                r["stage"] = "circle"
+
+    # --- 4) NMS ---
+    survivors = [i for i, r in enumerate(records) if r["status"].startswith("post_")]
+    kept_after_nms_idx: List[int] = []
+    if cfg.nms.enabled and survivors:
+        boxes = np.array([records[i]["bbox"] for i in survivors], dtype=np.float32)
+        scores = np.array([records[i]["score"] for i in survivors], dtype=np.float32)
+        keep_local, suppr_local = nms_filter(boxes, scores, iou_thresh=cfg.nms.iou)
+        kept_after_nms_idx = [survivors[k] for k in keep_local]
+        for s in suppr_local:
+            idx = survivors[s]
+            records[idx]["status"] = "removed_nms"
+            records[idx]["stage"] = "nms"
+            records[idx]["reason"] = f"iou>{cfg.nms.iou}"
+    else:
+        kept_after_nms_idx = survivors
+
+    for idx in kept_after_nms_idx:
+        records[idx]["status"] = "kept"
+        records[idx]["stage"] = "final"
+        records[idx]["reason"] = "ok"
+
+    # --- 5) Optional JSONL export ---
+    if out_jsonl is not None and img_path is not None and params_path is not None:
+        img_sha = _sha256_file(img_path)
+        params_sha = _sha256_file(params_path)
+        for r in records:
+            r.setdefault("image_sha256", img_sha)
+            r.setdefault("params_sha256", params_sha)
+            if run_id:
+                r.setdefault("run_id", run_id)
+        _write_jsonl(out_jsonl, records)
+
+    # --- 6) Optional overlay ---
+    overlay_img = None
+    if return_debug or return_overlay or cfg.visual.include_removed or cfg.visual.show_labels or cfg.visual.scale is not None:
+        overlay_img = render_stage_overlay(
+            bgr,
+            records,
+            include_removed=cfg.visual.include_removed,
+            scale=cfg.visual.scale,
+            show_labels=cfg.visual.show_labels,
+            palette=palette,
+            box_thickness=cfg.visual.box_thickness,
+            title=overlay_title,
+            title_loc="tr",
+        )
+
+    kept_boxes = _to_boxes(records)
+
+    if return_debug:
+        # Build a concise summary for run-metadata
+        by_status = dict(Counter(r["status"] for r in records))
+        by_stage  = dict(Counter(r["stage"] for r in records))
+        summary = {
+            "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
+            "total": len(records),
+            "kept": len(kept_boxes),
+            "by_status": by_status,
+            "by_stage": by_stage,
+        }
+        return kept_boxes, overlay_img, records, summary
+
+    if return_overlay:
+        return kept_boxes, overlay_img
+
+    return kept_boxes
