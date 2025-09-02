@@ -34,26 +34,19 @@ Right: Flipped view to match a north-up orientation.* [\[1\]](https://www.1001in
 
 ## Highlights
 
-- **Unified CLI** (`src/cli.py`) with subcommands:
-  - `pipeline` → metadata → circle → edges → tangent (writes `params.json` + overlay)
-  - `circle` / `edges` → run geometry steps individually (interactive or batch)
-  - `text` → **MSER** text detection (recall-first), with optional multiscale, morphology merge, circle coverage, geometry filter, and NMS; draws a legend and can stamp a param summary in the overlay.
-- **Geometry**
-  - `src/circle.py` (Hough + interactive refinement)
-  - `src/edges.py` (Canny+Hough; near-horizontal top edge; interactive ROI mode)
-  - `src/utils/tangent.py` (tangent “South” point from circle + edge)
-- **Text (modular stack in `src/text/`)**
-  - `backends/mser.py` (OpenCV MSER with robust param wiring)
-  - `filters/{geometry,circle,nms,morphology}.py`
-  - `visualize.py` (stage legend UL, optional param title TR)
-  - `config.py` (dataclasses for MSER, channels, multiscale, morphology, geometry, circle, NMS, visual)
-  - `detect.py` (orchestrator)
-- **Paired outputs** use `src/utils/naming.py` to write:
-  ```
-  processed_maps/<stem>/<stem>_text_<method>_run_XXXX.jpg
-  processed_maps/<stem>/<stem>_text_<method>_run_XXXX.json
-  ```
+- **Geometry detection**  
+  - **Circle**: interactive click + refined fit with HoughCircles, edge support scoring, paged candidate previews.  
+  - **Edge**: interactive line fit with live overlay, ROI band visualization.  
+  - **Tangent**: computes the **top tangent** point of the circle w.r.t. the detected edge.  
+  - Outputs JSON (`params.json`) with all parameters plus an overlay (`params_overlay.jpg`).
 
+- **Text region detection**  
+  - MSER-based detector with optional morphology/NMS filters.
+  - Sweep script (`scripts/sweep_mser.py`) for parameter experiments.
+  - CLI delegator that supports multiple backends (`mser`, `morph`, `canny`, …).
+
+- **PDF → Image extraction**  
+  Extract page images from PDFs (scanned manuscripts) with [`scripts/extract_pdfs.py`](scripts/extract_pdfs.py).  
 
 ## Example Results
 
@@ -134,88 +127,48 @@ You will get per-image folders under `data/processed_maps/<image_stem>/` with a 
 
 ## CLI usage
 
-### Full Pipeline
+### 1) Extract page images from PDFs
+- `python scripts/extract_pdfs.py`
 
-Runs metadata → circle → edge → tangent; writes per-image outputs under `data/processed_maps/img/`
-```
-python -m src.cli pipeline data/raw_maps -o data/processed_maps
-```
+### 2) Run the full geometry pipeline (circle → edge → tangent)
+- Directory:
+  - `python -m src.cli pipeline data/raw_maps/ -o data/processed_maps`
+- Interactive (clicks + paged circle preview):
+  - `python -m src.cli pipeline data/raw_maps/ -o data/processed_maps --interactive`
 
-Pipeline over a single file (non-interactive)
-```
-python -m src.cli pipeline "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
-```
+### 3) Run individual geometry steps
+- Circle only (single file, interactive):
+  - `python -m src.cli circle data/raw_maps/map1.png -o data/processed_maps --interactive`
+- Edge only (single file, interactive):
+  - `python -m src.cli edge data/raw_maps/map1.png -o data/processed_maps --interactive`
+- Batch (directory):
+  - `python -m src.cli circle data/raw_maps/ -o data/processed_maps --interactive`
+  - `python -m src.cli edge   data/raw_maps/ -o data/processed_maps --interactive`
 
-Interactive pipeline: click perimeter points (circle) and ~3 points along top edge (edge)
-```
-python -m src.cli pipeline "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
-```
+### 4) Text region detection (MSER by default)
+- Single file:
+  - `python -m src.cli text data/raw_maps/map1.png -o data/processed_maps --method mser`
+- Directory:
+  - `python -m src.cli text data/raw_maps/ -o data/processed_maps --method mser`
 
+### 5) Sweep MSER parameters (one-variable experiments)
+- Example (min_area):
+  - `python scripts/sweep_mser.py --image data/raw_maps/map1.png --var min_area --values 60,120,240 --baseline defaults --run-id sweep_minarea_v1`
+- Example (delta):
+  - `python scripts/sweep_mser.py --image data/raw_maps/map1.png --var delta --values 3,5,7 --baseline defaults --run-id sweep_delta_v1`
 
-### Circle Detection
+### 6) Outputs (where to look)
+- Geometry:
+  - `data/processed_maps/<stem>/params.json`
+  - `data/processed_maps/<stem>/params_overlay.jpg`
+- Text detection:
+  - `data/processed_maps/<stem>/overlay.jpg`
+  - (plus method-specific JSON if your backend writes it)
 
-Non-interactive (Hough-based) circle detection; updates `params.json`
-```
-python -m src.cli circle "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
-```
+### 7) Notes
+- Omit `-o` to use defaults (`data/processed_maps` for geometry, `data/processed_maps` for text).
+- Interactive runs allow paged circle selection and live edge overlays.
 
-Interactive circle detection: click N points on the perimeter, then choose a refined candidate
-```
-python -m src.cli circle "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
-```
-
-### Top Edge Detection
-
-Non-interactive (Canny+Hough) top-edge detection; updates `params.json`
-```
-python -m src.cli edges  "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps
-```
-
-Interactive edge detection: click ~3 points along the manuscript’s upper edge, then refine in an ROI band
-```
-python -m src.cli edges  "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --interactive
-```
-
-### Text Detection
-
-Method choices: `morph | mser | canny | sobel | gradient`
-```
-python -m src.cli text   "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" -o data/processed_maps --method mser
-```
-
-**Core MSER knobs**:
-- `--method mser`
-- `--polarity {dark,bright,both}` (we default to **both**)
-- `--channels gray[,r,g,b,labL]` (union of per-channel detections)
-- `--multiscale --scales s1,s2[,s3]` (union of per-scale detections)
-- `--mser-delta INT` (default 5)
-- `--mser-min-area INT` (pixels; e.g., 60)
-- `--mser-max-area INT` (pixels; e.g., 14400)
-- `--mser-max-variation FLOAT` (default ~0.3)
-- `--mser-min-diversity FLOAT` (default ~0.2)
-- `--mser-max-evolution INT` (default 200)
-- `--mser-area-threshold FLOAT` (default 1.01)
-- `--mser-min-margin FLOAT` (default 0.003)
-- `--mser-edge-blur-size INT` (e.g., 3–5)
-
-**Optional post-filters**:
-- **Morphology merge:** `--morph --morph-close 3 --morph-open 0 --morph-iter 1`
-- **Circle coverage:** `--circle-filter --params <params.json> --circle-min-cover 0.5` \
-  *(optional tolerance: `--circle-grow 1.02` if enabled)*
-- **Geometry filter:** `--geom-area-min-pct 5e-5 --geom-area-max-pct 0.02 --geom-ar-min 0.15 --geom-ar-max 8.0` \
-  (use `--no-geom-filter` to disable)
-- **NMS:** `--nms-iou 0.3` (use `--no-nms` to disable)
-
-
-### Image Overlay Only
-
-Writes a final overlay (with legend + metadata) to the given path.
-```
-python -m src.cli overlay "data/raw_maps/al-Qazwīnī_Arabic_MSS_575.jpg" \
-  -p "data/processed_maps/al-Qazwīnī_Arabic_MSS_575/params.json" \
-  -o assets/images/final_overlay.jpg \
-  --lang en
-```
 ---
 
 ## Data layout

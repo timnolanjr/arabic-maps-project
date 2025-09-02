@@ -89,7 +89,7 @@ def _meta_items(meta: Dict[str, Dict[str, float]], palette: Palette) -> List[Tup
     if "edge" in meta:
         rho = int(round(meta["edge"]["rho"]))
         theta = float(meta["edge"]["theta"])
-        items.append((f"Top Edge: rho={rho}, theta={theta:.3f} rad", palette.rho_theta.bgr))
+        items.append((f"Edge: rho={rho}, theta={theta:.3f} rad", palette.rho_theta.bgr))
 
     # Tangent last (red)
     if "tangent" in meta:

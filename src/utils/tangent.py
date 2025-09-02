@@ -1,25 +1,36 @@
-import json
+from __future__ import annotations
+from typing import Tuple
 import math
-from pathlib import Path
 
-def compute_tangent_point(params_path: Path) -> None:
+def compute_tangent_point(
+    cx: float,
+    cy: float,
+    r: float,
+    rho: float,
+    theta: float,
+    *,
+    prefer_top: bool = True,
+) -> Tuple[float, float]:
     """
-    Read center_x, center_y, radius, rho, theta from params.json,
-    compute the tangent point (top of the circle) for a horizontal edge line,
-    and update JSON.
+    Return a tangent point on a circle given a detected line in Hough normal form:
+        x*cos(theta) + y*sin(theta) = rho
+
+    If prefer_top is True, return the topmost of the two diametric candidates along
+    the line's unit normal (cos(theta), sin(theta)). Image coordinates are assumed
+    to have y increasing downward, so "top" means the smaller y value.
+
+    If prefer_top is False, return the classic "closest to the line" choice.
     """
-    data = json.loads(params_path.read_text(encoding="utf-8"))
-    cx, cy, r = data["center_x"], data["center_y"], data["radius"]
-    theta     = data["theta"]
+    nx = math.cos(theta)
+    ny = math.sin(theta)
 
-    # normal vector of the line
-    nx, ny = math.cos(theta), math.sin(theta)
+    if prefer_top:
+        x1, y1 = cx - r * nx, cy - r * ny
+        x2, y2 = cx + r * nx, cy + r * ny
+        return (x1, y1) if y1 <= y2 else (x2, y2)
 
-    # move *upwards* along -normal by r to hit the top of the circle
-    tx = cx - r * nx
-    ty = cy - r * ny
-
-    data["tangent_x"] = tx
-    data["tangent_y"] = ty
-
-    params_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    # Closest-to-line variant (kept for backward compatibility)
+    s = nx * cx + ny * cy - rho  # signed distance up to a scale
+    x = cx - math.copysign(r, s) * nx
+    y = cy - math.copysign(r, s) * ny
+    return x, y

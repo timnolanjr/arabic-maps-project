@@ -21,6 +21,202 @@ from src.utils.palette import DEFAULT_PALETTE
 from src.utils.vis import draw_circle as vis_draw_circle, draw_legend
 
 
+import tempfile
+from pathlib import Path
+
+import sys, subprocess, os
+
+
+def _maybe_open_finder(dir_path: Path) -> None:
+    """Open the folder in Finder (macOS); no-op elsewhere."""
+    if sys.platform != "darwin":
+        return
+    try:
+        subprocess.run(["open", str(dir_path)], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+def _maybe_close_finder(dir_path: Path) -> None:
+    """Close Finder windows showing this folder (macOS); no-op elsewhere."""
+    if sys.platform != "darwin":
+        return
+    p = str(dir_path).replace('"', '\\"')
+    # Robust AppleScript: compare POSIX path; guard coercions with try blocks
+    script = f'''
+    on safe_posix_path_of(theTarget)
+        try
+            set a to (theTarget as alias)
+            set tposix to POSIX path of a
+            return tposix
+        on error
+            return ""
+        end try
+    end safe_posix_path_of
+
+    tell application "Finder"
+        set targetPath to "{p}/"
+        set winList to every Finder window
+        repeat with w in winList
+            try
+                set t to target of w
+                set pposix to my safe_posix_path_of(t)
+                if pposix is not "" and pposix is targetPath then
+                    close w
+                end if
+            end try
+        end repeat
+    end tell
+    '''
+    try:
+        subprocess.run(["osascript", "-e", script], check=False,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+
+def _save_circle_preview(bgr, cx: float, cy: float, r: float, out_path: Path) -> None:
+    """Save a quick visualization of a candidate circle."""
+    vis = bgr.copy()
+    cv2.circle(vis, (int(round(cx)), int(round(cy))), int(round(r)), (0, 255, 0), 2)
+    cv2.circle(vis, (int(round(cx)), int(round(cy))), 3, (0, 0, 255), -1)
+    cv2.imwrite(str(out_path), vis)
+
+def _paginate_and_select_circle(
+    bgr,
+    candidates,          # List[Tuple[cx, cy, r]] or list-like
+    *,
+    page_size: int = 100,
+    tmpdir: Path | None = None,
+    open_finder: bool = False,
+):
+    """
+    Page through circle candidates, writing previews in chunks of `page_size`.
+    Controls:
+      - number in shown range -> accept that candidate
+      - 'n' -> next page
+      - 'p' -> previous page
+      - 'r' -> restart paging at first page
+      - 'q' -> abort (returns None)
+    Returns: (selected_tuple, tmpdir) or (None, tmpdir)
+    """
+    # normalize
+    norm = [(float(cx), float(cy), float(r)) for (cx, cy, r) in candidates]
+
+    if tmpdir is None:
+        tmpdir = Path(tempfile.mkdtemp(prefix="circle_preview_"))
+    else:
+        tmpdir = Path(tmpdir); tmpdir.mkdir(parents=True, exist_ok=True)
+
+    n = len(norm)
+    page = 0
+
+    while True:
+        start = page * page_size
+        end = min(start + page_size, n)
+
+        if start >= n:
+            print("[circle] No more candidates. Press 'p' for previous page or 'r' to restart.", flush=True)
+            page = max(0, page - 1)
+            continue
+
+        # write this page’s previews if not already present
+        for idx, (cx, cy, r) in enumerate(norm[start:end], start=start + 1):
+            out_path = tmpdir / f"cand_{idx:03d}.jpg"
+            if not out_path.exists():
+                _save_circle_preview(bgr, cx, cy, r, out_path)
+
+        print(f"Preview images ({start+1}–{end}) written to: {tmpdir}")
+        if open_finder:
+            _maybe_open_finder(tmpdir)
+
+        choice = input(
+            f"Enter index [{start+1}–{end}] to accept, "
+            f"'n' next, 'p' previous, 'r' restart, or 'q' quit: "
+        ).strip().lower()
+
+        if choice == "n":
+            page += 1; continue
+        if choice == "p":
+            page = max(0, page - 1); continue
+        if choice == "r":
+            page = 0; continue
+        if choice == "q":
+            if open_finder:
+                _maybe_close_finder(tmpdir)
+            return None, tmpdir
+
+        if choice.isdigit():
+            idx = int(choice)
+            if start + 1 <= idx <= end:
+                sel = norm[idx - 1]
+                print(f"[circle] accepted idx={idx} → cx={sel[0]:.2f}, cy={sel[1]:.2f}, r={sel[2]:.2f}", flush=True)
+                if open_finder:
+                    _maybe_close_finder(tmpdir)
+                return sel, tmpdir
+
+        print("Invalid input.", flush=True)
+
+
+def _edge_support_fraction(
+    dist_map: np.ndarray,
+    cx: float,
+    cy: float,
+    r: float,
+    *,
+    band: float = 1.5,
+    num_samples: int = 720,
+) -> float:
+    """
+    Fraction of sampled perimeter points whose nearest edge is within `band` pixels.
+    `dist_map` is a distance transform of the ROI where each value is distance to nearest edge.
+    """
+    thetas = np.linspace(0.0, 2.0 * np.pi, num_samples, endpoint=False)
+    xs = (cx + r * np.cos(thetas)).astype(int)
+    ys = (cy + r * np.sin(thetas)).astype(int)
+    H, W = dist_map.shape
+    m = (xs >= 0) & (xs < W) & (ys >= 0) & (ys < H)
+    if not np.any(m):
+        return 0.0
+    d = dist_map[ys[m], xs[m]]
+    return float(np.mean(d <= band))
+
+
+def _interleave_by_chunks(
+    a: list, b: list, *, chunk: int = 50, key=lambda x: x
+) -> list:
+    """
+    Interleave lists `a` and `b` by chunks: take `chunk` from a, then `chunk` from b, etc.
+    Deduplicates by the provided `key` (e.g., tuple of (cx,cy,r)).
+    """
+    out, seen = [], set()
+    i = j = 0
+    na, nb = len(a), len(b)
+    while i < na or j < nb:
+        # from a
+        take = 0
+        while i < na and take < chunk:
+            item = a[i]; i += 1
+            k = key(item)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(item)
+            take += 1
+        # from b
+        take = 0
+        while j < nb and take < chunk:
+            item = b[j]; j += 1
+            k = key(item)
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(item)
+            take += 1
+    return out
+
+
 # -----------------------------------------------------------------------------
 # Core detection & fitting
 # -----------------------------------------------------------------------------
@@ -30,33 +226,36 @@ def detect_circle_hough(
     param2: int = 10,
     min_radius: int = 0,
     max_radius: int = 0,
-    top_k: int = 100,
+    top_k: Optional[int] = None,
 ) -> Optional[List[Tuple[int, int, int]]]:
     """
     Run OpenCV HoughCircles on a grayscale image.
-    Returns up to top_k circles (cx, cy, r).
+    Returns circles as (cx, cy, r). If top_k is None, returns all.
     """
     circles = cv2.HoughCircles(
-        gray_img, cv2.HOUGH_GRADIENT, dp=1, minDist=2,
+        gray_img, cv2.HOUGH_GRADIENT, dp=1, minDist=1,
         param1=param1, param2=param2,
         minRadius=min_radius, maxRadius=max_radius,
     )
     if circles is None:
         return None
-    return np.around(circles[0]).astype(int).tolist()[:top_k]
+    arr = np.around(circles[0]).astype(int).tolist()
+    return arr if top_k is None else arr[:top_k]
 
+def fit_circle(xs: np.ndarray, ys: np.ndarray) -> tuple[float, float, float]:
+    """
+    Algebraic least-squares circle fit to points (xs, ys).
+    Returns (cx, cy, r). Requires len(xs) >= 3.
+    """
+    if xs.size < 3 or ys.size < 3:
+        raise ValueError("fit_circle needs at least 3 points")
 
-def fit_circle(xs: np.ndarray, ys: np.ndarray) -> Tuple[float, float, float]:
-    """
-    Fit a circle to points (xs, ys) via least squares. Returns (cx, cy, r).
-    """
     A = np.column_stack([2 * xs, 2 * ys, np.ones_like(xs)])
     b = xs * xs + ys * ys
     c, *_ = np.linalg.lstsq(A, b, rcond=None)
     cx, cy = c[0], c[1]
-    r = math.sqrt(c[2] + cx * cx + cy * cy)
-    return cx, cy, r
-
+    r = math.sqrt(max(0.0, c[2] + cx * cx + cy * cy))
+    return float(cx), float(cy), float(r)
 
 def generate_radius_candidates(
     gray_img: np.ndarray,
@@ -79,22 +278,80 @@ def refine_circle_in_roi(
     cx: float,
     cy: float,
     r: float,
-    delta: float = 0.1,
+    delta: float = 0.1,          # ROI half-margin as a fraction of r
     param1: int = 100,
     param2: int = 10,
+    *,
+    radius_pct: float = 0.02,    # constrain Hough radius to ± this fraction of r
+    chunk: int = 50,             # interleave chunk size: N by closeness, N by support
+    support_band: float = 1.5,   # px tolerance to count an edge hit
+    support_samples: int = 720,  # samples along the circle for scoring
+    w_radius: float = 2.0,
+    w_center: float = 1.0,
+    use_relative: bool = True,
 ) -> List[Tuple[int, int, int]]:
     """
-    Run HoughCircles within ±delta*r around (cx,cy,r). Returns adjusted circles.
+    Detect ALL circles in an ROI around (cx,cy) with radius constrained to
+    [r*(1 - radius_pct), r*(1 + radius_pct)].
+
+    Ranking:
+      • by_closeness: weighted (radius_diff [+ relative]) + (center_dist [+ relative])
+      • by_support  : edge-support fraction (desc), then closeness (asc)
+    Return order = interleaved chunks: <chunk> by_closeness, <chunk> by_support, repeat.
     """
     h, w = gray_img.shape
-    m = int(r * (1 + delta))
+
+    # ROI bounds
+    m = int(max(1, r * (1 + delta)))
     x0, y0 = max(0, int(cx - m)), max(0, int(cy - m))
     x1, y1 = min(w, int(cx + m)), min(h, int(cy + m))
     roi = gray_img[y0:y1, x0:x1]
-    min_r = max(0, int(r * (1 - delta)))
-    max_r = int(r * (1 + delta))
-    raw = detect_circle_hough(roi, param1, param2, min_r, max_r, top_k=100) or []
-    return [(cx_off + x0, cy_off + y0, rad) for (cx_off, cy_off, rad) in raw]
+
+    # Constrained radius window
+    min_r = max(1, int(round(r * (1.0 - radius_pct))))
+    max_r = max(min_r + 1, int(round(r * (1.0 + radius_pct))))
+
+    # Detect ALL candidates in ROI
+    raw = detect_circle_hough(roi, param1, param2, min_r, max_r, top_k=None) or []
+    if not raw:
+        return []
+
+    # Edge-support distance map (once)
+    edges = cv2.Canny(roi, 50, 150)
+    inv = (edges == 0).astype(np.uint8)
+    dist = cv2.distanceTransform(inv, cv2.DIST_L2, 3)
+
+    r_scale = max(1.0, float(r))
+    scored = []
+    for (cx_off, cy_off, rad) in raw:
+        cx_roi, cy_roi, rad = float(cx_off), float(cy_off), float(rad)
+        cx_full, cy_full = cx_roi + x0, cy_roi + y0
+
+        # support (accumulator proxy)
+        support = _edge_support_fraction(dist, cx_roi, cy_roi, rad,
+                                         band=support_band, num_samples=support_samples)
+
+        # closeness
+        rad_term = abs(rad - r) / r_scale if use_relative else abs(rad - r)
+        ctr_term = math.hypot(cx_full - cx, cy_full - cy) / r_scale if use_relative else \
+                   math.hypot(cx_full - cx, cy_full - cy)
+        combined = w_radius * rad_term + w_center * ctr_term
+
+        scored.append(((int(cx_full), int(cy_full), int(rad)),
+                       support, combined, rad_term, ctr_term))
+
+    # Two rankings
+    by_closeness = sorted(scored, key=lambda t: (t[2], -t[1], t[3], t[4]))
+    by_support   = sorted(scored, key=lambda t: (-t[1], t[2], t[3], t[4]))
+
+    # Interleave with CLOSENESS FIRST (distance 1–chunk, then support chunk, etc.)
+    interleaved = _interleave_by_chunks(
+        by_closeness, by_support,
+        chunk=chunk,
+        key=lambda s: (s[0][0], s[0][1], s[0][2])
+    )
+
+    return [t[0] for t in interleaved]
 
 
 # -----------------------------------------------------------------------------
@@ -143,6 +400,7 @@ def draw_multiple_circles(
 # -----------------------------------------------------------------------------
 # Interactive + non-interactive unified function (backward compatible)
 # -----------------------------------------------------------------------------
+
 def interactive_detect_and_save(
     img_path: Path,
     out_dir: Optional[Path] = None,
@@ -153,14 +411,10 @@ def interactive_detect_and_save(
     preview_size: int = 150,
     save_fig: bool = False,
     **_,
-) -> Dict[str, float]:
+) -> Optional[Dict[str, float]]:
     """
-    Detect the map circle. Returns {"center_x","center_y","radius"}.
+    Detect the map circle. Returns {"center_x","center_y","radius"} or None if aborted.
     If no out_dir/base_output_dir is given, defaults to processed_maps/<image_stem>.
-
-    Back-compat:
-      - Accepts legacy kwarg base_output_dir (ignored if out_dir is given).
-      - Extra kwargs tolerated via **_.
     """
     img_path = Path(img_path)
 
@@ -187,48 +441,45 @@ def interactive_detect_and_save(
         ax.set_title(f"Click {n_clicks} points around the circle perimeter.\n(close window to continue)")
         ax.axis("off")
         pts = plt.ginput(n_clicks, timeout=-1)
-        plt.close(fig)
+
+        if not pts or len(pts) < 3:
+            print("[circle] Fewer than 3 points clicked; aborting.", flush=True)
+            return None
 
         xs = np.array([x for x, _ in pts])
         ys = np.array([y for _, y in pts])
         cx0, cy0, r0 = fit_circle(xs, ys)
 
+        print(f"[circle] initial fit → cx={cx0:.2f}, cy={cy0:.2f}, r={r0:.2f}", flush=True)
+        circ = plt.Circle((cx0, cy0), r0, fill=False, linewidth=3, edgecolor='red')
+        ax.add_patch(circ)
+        fig.canvas.draw_idle()
+        plt.show(block=True)
+
         # --- Step 2: Refine in ROI around (cx0,cy0,r0) ---
-        candidates = refine_circle_in_roi(gray, cx0, cy0, r0)
+        candidates = refine_circle_in_roi(
+            gray, cx0, cy0, r0,
+            delta=0.1,
+            radius_pct=0.05,
+            chunk=50,
+            w_radius=1.0,   # radius importance
+            w_center=1.0,   # center importance (try 2.0 to prefer center more)
+            use_relative=True,
+        )
+
         if not candidates:
             candidates = [(int(cx0), int(cy0), int(r0))]
 
-        # --- Step 3: Preview choices and prompt ---
-        temp_dir = Path(tempfile.mkdtemp(prefix="circle_preview_"))
+        # --- Step 3: Paged preview & selection ---
+        selected, temp_dir = _paginate_and_select_circle(bgr, candidates, page_size=100)
         try:
-            for idx, (cx_i, cy_i, r_i) in enumerate(candidates, start=1):
-                preview = draw_circle(bgr, cx_i, cy_i, r_i, color=(0, 255, 0))
-                cv2.imwrite(str(temp_dir / f"{idx}.jpg"), preview)
-            print(f"\nPreview images (1–{len(candidates)}) written to: {temp_dir}")
-            choice = input(f"Enter index [1–{len(candidates)}] to accept, or 'r' to restart: ").strip().lower()
+            if selected is None:
+                print("[circle] aborted by user.", flush=True)
+                return None
+            cx, cy, r = selected
         finally:
             shutil.rmtree(temp_dir, ignore_errors=True)
 
-        if choice == "r":
-            return interactive_detect_and_save(
-                img_path,
-                out_dir=out_dir,
-                interactive=True,
-                n_clicks=n_clicks,
-                preview_size=preview_size,
-                save_fig=save_fig,
-            )
-
-        try:
-            sel = int(choice)
-            if 1 <= sel <= len(candidates):
-                cx, cy, r = candidates[sel - 1]
-            else:
-                print("Index out of range; defaulting to the first candidate.")
-                cx, cy, r = candidates[0]
-        except ValueError:
-            print("Unrecognized input; defaulting to the first candidate.")
-            cx, cy, r = candidates[0]
     else:
         # Non-interactive: try Hough; fallback heuristic
         short_side = min(h, w)
@@ -240,9 +491,7 @@ def interactive_detect_and_save(
 
     result = {"center_x": float(cx), "center_y": float(cy), "radius": float(r)}
 
-    # Save JSON & optional overlay
-    # with open(out_dir / "circle.json", "w", encoding="utf-8") as f:
-    #     json.dump(result, f, indent=2)
+    # Persist
     update_json(out_dir / "params.json", result)
 
     if save_fig:
@@ -253,6 +502,7 @@ def interactive_detect_and_save(
         print(f"Saved circle overlay → {out_dir}")
 
     return result
+
 
 
 # -----------------------------------------------------------------------------

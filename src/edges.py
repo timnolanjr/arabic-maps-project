@@ -16,6 +16,15 @@ from src.utils.io import update_json, make_output_dir
 from src.utils.palette import DEFAULT_PALETTE
 from src.utils.vis import draw_edge_line as vis_draw_edge_line, draw_legend
 
+from matplotlib.patches import Rectangle  # add this with your other imports
+
+def _plot_hough_line_on_axes(ax, rho: float, theta: float, img_shape: Tuple[int, int], **kwargs) -> None:
+    """
+    Draw the infinite Hough line (rho, theta) across the full image extent on a Matplotlib Axes.
+    kwargs are passed to ax.plot (e.g., color='red', linewidth=2).
+    """
+    p1, p2 = line_to_endpoints_full(np.abs(rho), theta, img_shape)  # uses your existing helper
+    ax.plot([p1[0], p2[0]], [p1[1], p2[1]], **kwargs)
 
 # -----------------------------------------------------------------------------
 # Low-level detection
@@ -172,17 +181,31 @@ def interactive_detect_and_save(
         ax.set_title(f"Click {n_clicks} points along the top edge\n(close window to continue)")
         ax.axis("off")
         pts = plt.ginput(n_clicks, timeout=-1)
-        plt.close(fig)
 
         xs = np.array([x for x, _ in pts])
         ys = np.array([y for _, y in pts])
 
         rho0, theta0 = fit_edge_line(xs, ys)
+        print(f"[edges] initial fit → rho={rho0:.2f}, theta={theta0:.4f} rad ({np.degrees(theta0):.1f}°)", flush=True)
+
+        # Draw the fitted line on the same axes (like the circle overlay)
+        _plot_hough_line_on_axes(ax, rho0, theta0, img.shape[:2], color='red', linewidth=2)
+        # Optionally show the clicked points
+        # ax.plot(xs, ys, 'o', ms=5, mfc='none', mec='white')
+        fig.canvas.draw_idle()
+        
 
         # Step 2: build ROI band ±delta*H around clicked ys
+        H, W = gray.shape[:2]  # ensure we have both H and W
         y0 = max(0, int(min(ys) - delta * H))
         y1 = min(H, int(max(ys) + delta * H))
         roi = gray[y0:y1, :]
+
+        # also draw ROI rectangle on original (optional)
+        rect = Rectangle((0, y0), W, (y1 - y0), fill=False, linewidth=1.5, edgecolor='yellow', linestyle='--')
+        ax.add_patch(rect)
+        fig.canvas.draw_idle()
+        plt.show(block=True)
 
         # Step 3: Canny+Hough in ROI, adjust back to full image coords
         edges = detect_edges_canny(roi, canny_low, canny_high)
@@ -192,6 +215,7 @@ def interactive_detect_and_save(
         # Non-interactive: run full-image Canny+Hough
         edges = detect_edges_canny(gray, canny_low, canny_high)
         lines = detect_lines_hough(edges, threshold=hough_thresh)[:top_k]
+
 
     # Step 4: filter horizontals & average
     horiz = filter_horizontal_angles(lines, min_angle_deg, max_angle_deg)

@@ -1,18 +1,15 @@
-# src/utils/metadata.py
-
-import json
 from pathlib import Path
 import cv2
+from src.utils.io import update_json  # <-- use the merge writer
 
-def init_params_from_image(input_path: Path, out_base: Path) -> None:
+def init_params_from_image(input_path: Path, out_base: Path) -> dict:
     """
-    Extract basic metadata from a raw map image and write a params.json
-    with empty placeholders for circle, edge, and tangent parameters.
+    Extract basic metadata and merge into params.json.
+    Safe to run before or after other stages: it won't overwrite non-null values.
     """
-    out_dir = out_base / input_path.stem
+    out_dir = out_base
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # file metadata
     filetype = input_path.suffix.lstrip('.').lower()
     filesize = input_path.stat().st_size
 
@@ -20,7 +17,6 @@ def init_params_from_image(input_path: Path, out_base: Path) -> None:
     if img is None:
         raise FileNotFoundError(f"Cannot open image: {input_path!r}")
 
-    # determine colorspace & dimensions
     if img.ndim == 2:
         colorspace = "gray"
         h, w = img.shape
@@ -43,7 +39,6 @@ def init_params_from_image(input_path: Path, out_base: Path) -> None:
         "tangent_y":    None,
     }
 
-    (out_dir / "params.json").write_text(
-        json.dumps(params, indent=2),
-        encoding="utf-8"
-    )
+    json_path = out_dir / "params.json"
+    update_json(json_path, params, skip_none=True)
+    return params
